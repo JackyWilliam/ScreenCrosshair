@@ -70,6 +70,8 @@ namespace ScreenCrosshair
             if (ranked.Count == 0) { result.Message = "未读到枪名，请把两个枪名一起框入"; return result; }
             WeaponLabel winner = ranked[0];
             // A readable dim label is not an active gun. A tie or a fading HUD must not select a slot arbitrarily.
+            if (ranked.Count == 1 && winner.Brightness < 210)
+            { result.Message = "只读到暗色枪名：" + winner.Weapon.Name + "，亮色枪名可能漏读"; return result; }
             if (winner.Brightness < 210 || winner.Contrast < 35 || (ranked.Count > 1 && winner.Brightness - ranked[1].Brightness < 25))
             { result.Message = "枪名高亮不明确，等待画面稳定"; return result; }
             result.Active = winner.Weapon;

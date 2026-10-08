@@ -58,6 +58,13 @@ namespace ScreenCrosshair
         public static Weapon Match(string text)
         {
             string normalized = Normalize(text);
+            var glyphs = new StringBuilder();
+            foreach (char c in text ?? "") if (!char.IsWhiteSpace(c)) glyphs.Append(char.ToUpperInvariant(c));
+            // Chinese OCR reads the HUD's zeros as square glyphs and its dash as 一.
+            // Require the complete 3-zero-dash-3-zero token; never substitute digits in arbitrary gun names or ammo.
+            if (glyphs.Length == 5 && glyphs[0] == '3' && glyphs[3] == '3'
+                && "0O囗口〇".IndexOf(glyphs[1]) >= 0 && "0O囗口〇".IndexOf(glyphs[4]) >= 0
+                && "-‐‑–—−一".IndexOf(glyphs[2]) >= 0) normalized = "3030";
             Weapon match = null;
             foreach (Weapon weapon in All)
                 foreach (string alias in weapon.Aliases)

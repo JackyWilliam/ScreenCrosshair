@@ -165,6 +165,37 @@ public static class RecognitionTests
         }
         Assert(Find("50-30") == null && Find("3 囗 囗 0 0") == null && Find("30") == null,
             "Numeric recovery does not turn uncertain OCR fragments into a weapon alias");
+        Assert(new[] { "3 囗 一 3 囗", "3口-3口", "3O–30", "30一3〇", "3\t囗\t一\t3\t囗" }.All(s => Find(s) == repeater),
+            "Complete 30-30 HUD token tolerates Chinese zero and dash glyphs");
+        Assert(new[] { "3囗", "3囗3囗", "5囗一3囗", "3囗一8囗", "3囗一3", "3囗一3囗0", "13囗一3囗", "弹药3囗一3囗", "3囗一3囗R301" }.All(s => Find(s) != repeater),
+            "Incomplete, prefixed, suffixed and different-digit OCR fragments are not corrected to 30-30");
+        using (var image = new Bitmap(200, 50))
+        using (Graphics g = Graphics.FromImage(image))
+        {
+            var text = new OcrReading { Text = "克雷贝尔 3 囗 一 3 囗" };
+            var line = new OcrLineBox(); text.Lines.Add(line);
+            line.Words.Add(new OcrWordBox { Text = "克雷贝尔", Bounds = new RectangleF(10, 10, 40, 25) });
+            for (int i = 0; i < 5; i++) line.Words.Add(new OcrWordBox { Text = "3囗一3囗"[i].ToString(), Bounds = new RectangleF(100 + i * 15, 10, 12, 25) });
+            for (int state = 0; state < 4; state++)
+            {
+                g.Clear(Color.FromArgb(20, 20, 20));
+                for (int i = 0; i < line.Words.Count; i++)
+                {
+                    bool bright = state == 3 || (i == 0 ? state == 1 : state == 0);
+                    // Simulated OCR boxes retain dark margins and bright/dim strokes independently of the misread glyph.
+                    RectangleF box = line.Words[i].Bounds; box.Inflate(-3, -3);
+                    using (var brush = new SolidBrush(bright ? Color.White : Color.FromArgb(170, 170, 170))) g.FillRectangle(brush, box);
+                }
+                var result = ActiveWeaponDetector.Read(image, text);
+                Assert(result.Labels.Count == 2 && (state == 0 ? result.Active == repeater : state == 1 ? result.Active == Find("克雷贝尔") : result.Active == null),
+                    "Corrected OCR token still follows actual glyph brightness: " + state);
+            }
+            line.Words.RemoveRange(1, 5);
+            g.Clear(Color.FromArgb(20, 20, 20));
+            using (var brush = new SolidBrush(Color.FromArgb(170, 170, 170))) g.FillRectangle(brush, 13, 13, 34, 19);
+            var dimOnly = ActiveWeaponDetector.Read(image, text);
+            Assert(dimOnly.Active == null && dimOnly.Message.StartsWith("只读到暗色枪名：克雷贝尔"), "Dim-only OCR explains a possibly missing active label");
+        }
     }
 
     static void ProfileChecks()
@@ -585,7 +616,7 @@ public static class RecognitionTests
             gun = "MASTIFF"; game.Invalidate();
             await WaitFor(delegate { return overlay.Recognition.DisplayShape == 3; }, "Recognizes another shotgun");
             gun = ""; game.Invalidate();
-            await WaitFor(delegate { return overlay.Recognition.DisplayShape == 0 && overlay.Recognition.Status.StartsWith("枪名高亮不明确"); }, "Only dim reserve name remains: restore ordinary style");
+            await WaitFor(delegate { return overlay.Recognition.DisplayShape == 0 && overlay.Recognition.Status.StartsWith("只读到暗色枪名"); }, "Only dim reserve name remains: restore ordinary style");
             config.OcrLanguage = "zh-Hans-CN"; overlay.Changed(); gun = "哨兵"; game.Invalidate();
             await WaitFor(delegate { return overlay.Recognition.DisplayShape == 4; }, "Chinese HUD capture selects sniper");
             config.AutoDetect = false; overlay.Changed();
