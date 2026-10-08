@@ -9,7 +9,7 @@ using System.Windows.Forms;
 using System.Xml.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("屏幕准星")]
-[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
 
 namespace ScreenCrosshair
 {
@@ -107,6 +107,9 @@ namespace ScreenCrosshair
         public CrosshairStyle Shotgun;
         public CrosshairStyle Sniper;
         public List<CustomPreset> CustomPresets = new List<CustomPreset>();
+        public List<CustomPreset> ShotgunPresets = new List<CustomPreset>();
+        public List<CustomPreset> SniperPresets = new List<CustomPreset>();
+        public int PresetLayoutVersion;
         public string Monitor = "";
         public bool AutoDetect = false;
         public string OcrLanguage = "zh-Hans-CN";
@@ -115,13 +118,39 @@ namespace ScreenCrosshair
         public int CaptureLayoutVersion = 0;
         public double CaptureX, CaptureY, CaptureWidth, CaptureHeight;
 
-        public CustomPreset SavePreset(string name, CrosshairStyle style)
+        public static string ProfileName(WeaponKind kind)
+        { return kind == WeaponKind.Shotgun ? "霰弹枪" : kind == WeaponKind.Sniper ? "狙击枪" : "普通（十字）"; }
+
+        public List<CustomPreset> Presets(WeaponKind kind)
+        {
+            if (CustomPresets == null) CustomPresets = new List<CustomPreset>();
+            if (PresetLayoutVersion < 1)
+            {
+                // Old presets were usable in every category. Copy once so upgrading preserves that access,
+                // then each list owns its snapshots; an intentionally emptied list must stay empty on reload.
+                ShotgunPresets = CopyPresets(CustomPresets); SniperPresets = CopyPresets(CustomPresets);
+                PresetLayoutVersion = 1;
+            }
+            if (ShotgunPresets == null) ShotgunPresets = new List<CustomPreset>();
+            if (SniperPresets == null) SniperPresets = new List<CustomPreset>();
+            return kind == WeaponKind.Shotgun ? ShotgunPresets : kind == WeaponKind.Sniper ? SniperPresets : CustomPresets;
+        }
+        static List<CustomPreset> CopyPresets(List<CustomPreset> source)
+        {
+            var copies = new List<CustomPreset>();
+            foreach (CustomPreset preset in source)
+                if (preset != null && preset.Style != null) copies.Add(new CustomPreset { Name = preset.Name, Style = preset.Style.Copy(preset.Style.Shape) });
+            return copies;
+        }
+
+        public CustomPreset SavePreset(string name, CrosshairStyle style, WeaponKind kind = WeaponKind.Ordinary)
         {
             name = (name ?? "").Trim();
             if (name.Length == 0 || name.Length > 40 || Array.Exists(name.ToCharArray(), char.IsControl))
                 throw new ArgumentException("名称需为 1–40 个可见字符。");
-            CustomPreset preset = CustomPresets.Find(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
-            if (preset == null) { preset = new CustomPreset { Name = name }; CustomPresets.Add(preset); }
+            List<CustomPreset> presets = Presets(kind);
+            CustomPreset preset = presets.Find(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (preset == null) { preset = new CustomPreset { Name = name }; presets.Add(preset); }
             // Store snapshots: editing a weapon profile must never mutate a saved preset, or vice versa.
             preset.Style = style.Copy(style.Shape); preset.Style.ValidateAppearance();
             return preset;
@@ -132,6 +161,20 @@ namespace ScreenCrosshair
             if (Shotgun == null) Shotgun = Copy(3);
             if (Sniper == null) Sniper = Copy(4);
             return kind == WeaponKind.Shotgun ? Shotgun : kind == WeaponKind.Sniper ? Sniper : this;
+        }
+
+        public void SyncCommonParameters(WeaponKind sourceKind)
+        {
+            CrosshairStyle source = Profile(sourceKind);
+            foreach (WeaponKind kind in new[] { WeaponKind.Ordinary, WeaponKind.Shotgun, WeaponKind.Sniper })
+            {
+                if (kind == sourceKind) continue;
+                CrosshairStyle target = Profile(kind);
+                // Sync is a one-time copy of shared appearance only. Shape, component switches and
+                // angles belong to each category; saved preset snapshots must not change with it.
+                target.Length = source.Length; target.Gap = source.Gap; target.Thickness = source.Thickness;
+                target.ColorIndex = source.ColorIndex; target.ColorHex = source.ColorHex; target.Outline = source.Outline;
+            }
         }
 
         public void ResetProfile(WeaponKind kind)
@@ -162,10 +205,13 @@ namespace ScreenCrosshair
         {
             ValidateAppearance();
             Profile(WeaponKind.Shotgun).ValidateAppearance(); Profile(WeaponKind.Sniper).ValidateAppearance();
-            if (CustomPresets == null) CustomPresets = new List<CustomPreset>();
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            CustomPresets.RemoveAll(p => p == null || string.IsNullOrWhiteSpace(p.Name) || p.Style == null || !names.Add(p.Name.Trim()));
-            foreach (CustomPreset preset in CustomPresets) { preset.Name = preset.Name.Trim(); preset.Style.ValidateAppearance(); }
+            foreach (WeaponKind kind in new[] { WeaponKind.Ordinary, WeaponKind.Shotgun, WeaponKind.Sniper })
+            {
+                List<CustomPreset> presets = Presets(kind);
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                presets.RemoveAll(p => p == null || string.IsNullOrWhiteSpace(p.Name) || p.Style == null || !names.Add(p.Name.Trim()));
+                foreach (CustomPreset preset in presets) { preset.Name = preset.Name.Trim(); preset.Style.ValidateAppearance(); }
+            }
             Monitor = Monitor ?? "";
             if (OcrLanguage != "en-US" && OcrLanguage != "zh-Hans-CN") OcrLanguage = "zh-Hans-CN";
             if (ScanInterval != 500 && ScanInterval != 1000 && ScanInterval != 2000) ScanInterval = 1000;
