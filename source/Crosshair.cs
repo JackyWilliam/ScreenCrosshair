@@ -9,7 +9,7 @@ using System.Windows.Forms;
 using System.Xml.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("屏幕准星")]
-[assembly: System.Reflection.AssemblyVersion("1.1.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
 
 namespace ScreenCrosshair
 {
@@ -24,7 +24,7 @@ namespace ScreenCrosshair
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     }
 
-    public class Settings
+    public class CrosshairStyle
     {
         public int Length = 8;
         public int Gap = 4;
@@ -33,8 +33,33 @@ namespace ScreenCrosshair
         public int ColorIndex = 0;
         public bool Outline = true;
         public bool CenterDot = false;
-        public string Monitor = "";
         public string ColorHex = "";
+
+        [XmlIgnore] public Color ForegroundColor
+        {
+            get { Color custom; return Settings.TryParseColor(ColorHex, out custom) ? custom : Settings.Colors[ColorIndex]; }
+        }
+
+        public CrosshairStyle Copy(int shape)
+        {
+            return new CrosshairStyle { Length = Length, Gap = Gap, Thickness = Thickness, Shape = shape, ColorIndex = ColorIndex, ColorHex = ColorHex, Outline = Outline, CenterDot = CenterDot };
+        }
+
+        public void ValidateAppearance()
+        {
+            Length = Math.Max(2, Math.Min(32, Length)); Gap = Math.Max(0, Math.Min(20, Gap)); Thickness = Math.Max(1, Math.Min(8, Thickness));
+            Shape = Math.Max(0, Math.Min(4, Shape)); ColorIndex = Math.Max(0, Math.Min(Settings.Colors.Length - 1, ColorIndex));
+            Color custom; ColorHex = Settings.TryParseColor(ColorHex, out custom) ? Settings.ToHex(custom) : "";
+        }
+    }
+
+    public class Settings : CrosshairStyle
+    {
+        // Keep ordinary appearance fields at the XML root so existing settings migrate without losing values.
+        // Missing class profiles copy the old shared appearance once; subsequent edits stay independent.
+        public CrosshairStyle Shotgun;
+        public CrosshairStyle Sniper;
+        public string Monitor = "";
         public bool AutoDetect = false;
         public string OcrLanguage = "zh-Hans-CN";
         public int ScanInterval = 1000;
@@ -42,9 +67,20 @@ namespace ScreenCrosshair
         public int CaptureLayoutVersion = 0;
         public double CaptureX, CaptureY, CaptureWidth, CaptureHeight;
 
-        [XmlIgnore] public Color ForegroundColor
+        public CrosshairStyle Profile(WeaponKind kind)
         {
-            get { Color custom; return TryParseColor(ColorHex, out custom) ? custom : Colors[ColorIndex]; }
+            if (Shotgun == null) Shotgun = Copy(3);
+            if (Sniper == null) Sniper = Copy(4);
+            return kind == WeaponKind.Shotgun ? Shotgun : kind == WeaponKind.Sniper ? Sniper : this;
+        }
+
+        public void ResetProfile(WeaponKind kind)
+        {
+            CrosshairStyle current = Profile(kind);
+            var defaults = new CrosshairStyle();
+            current.Length = defaults.Length; current.Gap = defaults.Gap; current.Thickness = defaults.Thickness;
+            current.Shape = kind == WeaponKind.Shotgun ? 3 : kind == WeaponKind.Sniper ? 4 : 0;
+            current.ColorIndex = 0; current.ColorHex = ""; current.Outline = true; current.CenterDot = false;
         }
 
         public static bool TryParseColor(string text, out Color color)
@@ -63,13 +99,9 @@ namespace ScreenCrosshair
 
         public void Validate()
         {
-            Length = Math.Max(2, Math.Min(32, Length));
-            Gap = Math.Max(0, Math.Min(20, Gap));
-            Thickness = Math.Max(1, Math.Min(8, Thickness));
-            Shape = Math.Max(0, Math.Min(4, Shape));
-            ColorIndex = Math.Max(0, Math.Min(Colors.Length - 1, ColorIndex));
+            ValidateAppearance();
+            Profile(WeaponKind.Shotgun).ValidateAppearance(); Profile(WeaponKind.Sniper).ValidateAppearance();
             Monitor = Monitor ?? "";
-            Color custom; ColorHex = TryParseColor(ColorHex, out custom) ? ToHex(custom) : "";
             if (OcrLanguage != "en-US" && OcrLanguage != "zh-Hans-CN") OcrLanguage = "zh-Hans-CN";
             if (ScanInterval != 500 && ScanInterval != 1000 && ScanInterval != 2000) ScanInterval = 1000;
             if (!(CaptureX >= 0 && CaptureY >= 0 && CaptureWidth > 0 && CaptureHeight > 0 && CaptureX + CaptureWidth <= 1.001 && CaptureY + CaptureHeight <= 1.001)) CaptureRegionSet = false;
@@ -99,6 +131,7 @@ namespace ScreenCrosshair
 
         public void Save()
         {
+            Validate();
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
             string temp = FilePath + ".tmp";
             // Atomic replacement prevents an interrupted save from corrupting the last working settings.
@@ -110,10 +143,10 @@ namespace ScreenCrosshair
 
     public static class Renderer
     {
-        public static void Draw(Graphics g, Settings s, int cx, int cy)
+        public static void Draw(Graphics g, CrosshairStyle s, int cx, int cy)
         { Draw(g, s, cx, cy, s.Shape); }
 
-        public static void Draw(Graphics g, Settings s, int cx, int cy, int shape)
+        public static void Draw(Graphics g, CrosshairStyle s, int cx, int cy, int shape)
         {
             // Solid pixel-aligned strokes avoid colored halos against a color-keyed transparent background.
             g.SmoothingMode = SmoothingMode.None;
@@ -254,15 +287,15 @@ namespace ScreenCrosshair
             Screen[] screens = Screen.AllScreens;
             int current = Array.FindIndex(screens, delegate(Screen s) { return s.DeviceName == SelectedScreen().DeviceName; });
             Config.Monitor = screens[(current + 1) % screens.Length].DeviceName;
-            Changed();
+            Changed(false);
             if (settingsWindow != null && !settingsWindow.IsDisposed) settingsWindow.Reload();
         }
 
-        public void Changed()
+        public void Changed(bool recognitionSettingsChanged = true)
         {
             Config.Validate();
             ApplyTransparencyColor();
-            Recognition.Reset();
+            if (recognitionSettingsChanged) Recognition.Reset();
             RefreshPosition();
             Invalidate();
             if (!persist) return;
@@ -272,8 +305,13 @@ namespace ScreenCrosshair
 
         void ApplyTransparencyColor()
         {
-            // A user can choose any RGB value, including the previous transparent color key.
-            Color key = Config.ForegroundColor.ToArgb() == Color.FromArgb(1, 2, 3).ToArgb() ? Color.FromArgb(2, 3, 4) : Color.FromArgb(1, 2, 3);
+            // Reserve a key unused by all profiles, so a recognition switch cannot make a custom color disappear.
+            Color key = Color.FromArgb(1, 2, 3);
+            for (int i = 1; i <= 4; i++)
+            {
+                key = Color.FromArgb(i, i + 1, i + 2);
+                if (key.ToArgb() != Config.ForegroundColor.ToArgb() && key.ToArgb() != Config.Profile(WeaponKind.Shotgun).ForegroundColor.ToArgb() && key.ToArgb() != Config.Profile(WeaponKind.Sniper).ForegroundColor.ToArgb()) break;
+            }
             if (BackColor != key) { BackColor = key; TransparencyKey = key; }
         }
 
@@ -296,7 +334,7 @@ namespace ScreenCrosshair
             settingsWindow.Activate();
         }
 
-        protected override void OnPaint(PaintEventArgs e) { Renderer.Draw(e.Graphics, Config, ClientSize.Width / 2, ClientSize.Height / 2, Recognition == null ? Config.Shape : Recognition.DisplayShape); }
+        protected override void OnPaint(PaintEventArgs e) { Renderer.Draw(e.Graphics, Recognition == null ? Config : Recognition.DisplayStyle, ClientSize.Width / 2, ClientSize.Height / 2); }
 
         protected override void WndProc(ref Message m)
         {
@@ -324,8 +362,8 @@ namespace ScreenCrosshair
 
     public class Preview : Panel
     {
-        public Settings Config;
-        public Preview(Settings settings) { Config = settings; DoubleBuffered = true; BackColor = Color.FromArgb(24, 29, 38); }
+        public CrosshairStyle Config;
+        public Preview(CrosshairStyle settings) { Config = settings; DoubleBuffered = true; BackColor = Color.FromArgb(24, 29, 38); }
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);

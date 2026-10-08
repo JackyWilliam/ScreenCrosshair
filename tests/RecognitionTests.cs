@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -131,6 +132,56 @@ public static class RecognitionTests
         Assert(tracker.Observe(left.Active) == right.Active && tracker.Observe(left.Active) == left.Active, "Highlight switching still requires two consistent frames");
     }
 
+    static void ProfileChecks()
+    {
+        var serializer = new XmlSerializer(typeof(Settings));
+        Settings legacy;
+        using (var input = new StringReader("<Settings><Length>14</Length><Gap>6</Gap><Thickness>3</Thickness><ColorIndex>2</ColorIndex><ColorHex>#AABBCC</ColorHex><Outline>false</Outline><CenterDot>true</CenterDot><AutoDetect>true</AutoDetect><ScanInterval>500</ScanInterval><CaptureLayoutVersion>2</CaptureLayoutVersion><CaptureRegionSet>true</CaptureRegionSet><CaptureX>0.7</CaptureX><CaptureY>0.8</CaptureY><CaptureWidth>0.2</CaptureWidth><CaptureHeight>0.1</CaptureHeight></Settings>"))
+            legacy = (Settings)serializer.Deserialize(input);
+        legacy.Validate();
+        Assert(legacy.Length == 14 && legacy.Shotgun.Length == 14 && legacy.Sniper.Length == 14 && legacy.Shotgun.ColorHex == "#AABBCC" && legacy.Sniper.ColorHex == "#AABBCC", "Legacy shared colors and dimensions copied to all profiles");
+        Assert(legacy.Shape == 0 && legacy.Shotgun.Shape == 3 && legacy.Sniper.Shape == 4 && !legacy.Shotgun.Outline && legacy.Sniper.CenterDot, "Migration preserves appearance and class-specific shapes");
+        Assert(legacy.CaptureRegionSet && legacy.CaptureLayoutVersion == 2 && legacy.AutoDetect && legacy.ScanInterval == 500, "Profile migration preserves calibrated region and recognition settings");
+        legacy.Shotgun.Length = 26; legacy.Shotgun.ColorHex = "#FF0000"; legacy.Sniper.Thickness = 5; legacy.Sniper.Gap = 12;
+        legacy.Validate();
+        Assert(legacy.Length == 14 && legacy.Sniper.Length == 14 && legacy.Thickness == 3 && legacy.Shotgun.Thickness == 3, "Profile edits do not share mutable values");
+        using (var output = new StringWriter())
+        {
+            serializer.Serialize(output, legacy);
+            using (var input = new StringReader(output.ToString()))
+            {
+                var saved = (Settings)serializer.Deserialize(input); saved.Validate();
+                Assert(saved.Length == 14 && saved.Shotgun.Length == 26 && saved.Shotgun.ColorHex == "#FF0000" && saved.Sniper.Thickness == 5 && saved.Sniper.Gap == 12, "All three profiles survive XML reload independently");
+            }
+        }
+        legacy.ResetProfile(WeaponKind.Shotgun);
+        Assert(legacy.Shotgun.Shape == 3 && legacy.Shotgun.Length == 8 && legacy.Shotgun.ColorHex == "" && legacy.Length == 14 && legacy.Sniper.Thickness == 5, "Reset affects only chosen profile");
+        legacy.Shotgun = null; legacy.Validate();
+        Assert(legacy.Shotgun.Length == 14 && legacy.Sniper.Thickness == 5, "Missing one profile repairs only that profile");
+
+        legacy.AutoDetect = false; legacy.ColorHex = "#010203"; legacy.Shotgun.ColorHex = "#020304"; legacy.Sniper.ColorHex = "#030405";
+        using (var overlay = new Overlay(legacy, false))
+        {
+            var tracker = (StableWeaponTracker)typeof(RecognitionController).GetField("tracker", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(overlay.Recognition);
+            Assert(new[] { legacy.ForegroundColor, legacy.Shotgun.ForegroundColor, legacy.Sniper.ForegroundColor }.All(c => c.ToArgb() != overlay.TransparencyKey.ToArgb()), "Transparent key avoids all three profile colors");
+            tracker.Observe(Find("MASTIFF")); tracker.Observe(Find("MASTIFF"));
+            Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy.Shotgun), "Confirmed shotgun selects complete shotgun profile");
+            legacy.Shotgun.Shape = 2; overlay.Changed(false);
+            Assert(overlay.Recognition.DisplayShape == 2 && ReferenceEquals(overlay.Recognition.DisplayStyle, legacy.Shotgun), "Appearance edits preserve recognition and use chosen profile shape");
+            tracker.Observe(Find("SENTINEL")); tracker.Observe(Find("SENTINEL"));
+            Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy.Sniper), "Confirmed sniper selects complete sniper profile");
+            tracker.Observe(null); tracker.Observe(null); tracker.Observe(null);
+            Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy), "Unknown readings restore complete ordinary profile");
+            tracker.Observe(Find("MASTIFF")); tracker.Observe(Find("MASTIFF")); overlay.Changed();
+            Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy), "Recognition configuration reset restores ordinary profile");
+            int before = overlay.Recognition.HistoryText.Split(new[] { Environment.NewLine }, StringSplitOptions.None).Length;
+            overlay.Recognition.Reset();
+            Assert(overlay.Recognition.HistoryText.Split(new[] { Environment.NewLine }, StringSplitOptions.None).Length == before, "Repeated same state does not flood history");
+            for (int i = 0; i < 50; i++) { legacy.AutoDetect = !legacy.AutoDetect; overlay.Recognition.Reset(); }
+            Assert(overlay.Recognition.HistoryText.Split(new[] { Environment.NewLine }, StringSplitOptions.None).Length == 30, "Status history is bounded to 30 transitions");
+        }
+    }
+
     static void UiChecks()
     {
         var config = new Settings { ColorHex = "#010203" };
@@ -146,6 +197,18 @@ public static class RecognitionTests
             TextBox hex = settings.Controls.OfType<TextBox>().Single(); hex.Text = "#AA33CC";
             Assert(config.ForegroundColor.ToArgb() == Color.FromArgb(170, 51, 204).ToArgb(), "HEX input updates live color");
             hex.Text = "#AA33CZ"; Assert(config.ColorHex == "#AA33CC", "Invalid HEX preserves last valid color");
+            ComboBox profile = settings.Controls.OfType<ComboBox>().Single(c => c.Name == "EditingProfile");
+            profile.SelectedIndex = 1; sliders[0].Value = 24; sliders[2].Value = 6; hex.Text = "#FF8800";
+            Assert(config.Shotgun.Length == 24 && config.Shotgun.Thickness == 6 && config.Shotgun.ColorHex == "#FF8800" && config.Length == 19 && config.ColorHex == "#AA33CC", "UI edits shotgun profile without changing ordinary");
+            Assert(ReferenceEquals(settings.Controls.OfType<Preview>().Single().Config, config.Shotgun), "Preview follows selected profile");
+            Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, config), "Selecting editor profile alone does not switch active overlay");
+            profile.SelectedIndex = 2; sliders[1].Value = 11; hex.Text = "#00BBFF";
+            Assert(config.Sniper.Gap == 11 && config.Sniper.ColorHex == "#00BBFF" && config.Shotgun.ColorHex == "#FF8800", "UI sniper profile is independent of shotgun");
+            profile.SelectedIndex = 0;
+            Assert(sliders[0].Value == 19 && sliders[1].Value == 7 && sliders[2].Value == 4 && hex.Text == "#AA33CC", "Switching editor back restores ordinary control values");
+            profile.SelectedIndex = 1;
+            settings.Controls.OfType<Button>().Single(b => b.Text == "重置当前").PerformClick();
+            Assert(config.Shotgun.Length == 8 && config.Shotgun.Shape == 3 && config.Length == 19 && config.Sniper.Gap == 11, "UI reset is limited to selected profile");
             config.AutoDetect = false; overlay.Changed(); Assert(overlay.Recognition.Status == "自动识别已关闭", "Disabled recognition reports stopped");
             settings.Close(); overlay.Close();
         }
@@ -211,7 +274,7 @@ public static class RecognitionTests
     public static int Main(string[] args)
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-        try { UnitChecks(); ImagePipeline(); HighlightChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+        try { UnitChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
         if (!args.Contains("--interactive")) { Console.WriteLine("SUCCESS: " + checks + " assertions; interactive screen-capture test not requested."); return 0; }
         // The executable is named r5apex solely so the production foreground guard can be tested end to end.
         // All captured pixels belong to this synthetic window; no game process is modified or inspected.

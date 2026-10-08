@@ -140,10 +140,16 @@ namespace ScreenCrosshair
         int generation;
         IntPtr lastWindow;
         Rectangle lastBounds;
+        readonly Queue<string> history = new Queue<string>();
+        string lastEvent;
         public string Status { get; private set; }
+        public string LastResult { get; private set; }
+        public string LastRecognizedText { get; private set; }
+        public string HistoryText { get { return string.Join(Environment.NewLine, history.ToArray()); } }
         public double LastMilliseconds { get; private set; }
         public event Action Updated;
-        public int DisplayShape { get { return tracker.Current == null || tracker.Current.Kind == WeaponKind.Ordinary ? config.Shape : tracker.Current.Kind == WeaponKind.Shotgun ? 3 : 4; } }
+        public CrosshairStyle DisplayStyle { get { return config.Profile(tracker.Current == null ? WeaponKind.Ordinary : tracker.Current.Kind); } }
+        public int DisplayShape { get { return DisplayStyle.Shape; } }
 
         public RecognitionController(Settings settings)
         {
@@ -158,9 +164,16 @@ namespace ScreenCrosshair
             timer.Interval = config.ScanInterval;
             SetStatus(!config.AutoDetect ? "自动识别已关闭" : !config.CaptureRegionSet ? "请重新框选两个枪名，按文字高亮判断激活武器" : "等待 Apex 位于前台");
         }
-        void SetStatus(string message)
+        void SetStatus(string message, string eventKey = null)
         {
             Status = message;
+            // Keep transitions, not every OCR frame. This bounded memory-only history explains pauses without log files.
+            string key = eventKey ?? message;
+            if (key != lastEvent)
+            {
+                lastEvent = key; history.Enqueue(DateTime.Now.ToString("HH:mm:ss") + "  " + message);
+                while (history.Count > 30) history.Dequeue();
+            }
             if (Updated != null) Updated();
         }
         async void Tick(object sender, EventArgs args)
@@ -170,7 +183,8 @@ namespace ScreenCrosshair
             if (!ApexWindow.Foreground(out window, out bounds))
             {
                 if (lastWindow != IntPtr.Zero) { generation++; lastWindow = IntPtr.Zero; tracker.Reset(); }
-                if (Status != "已暂停：Apex 不在前台") SetStatus("已暂停：Apex 不在前台");
+                const string background = "已暂停：Apex 不在前台；切回游戏自动继续";
+                if (Status != background) SetStatus(background);
                 return;
             }
             if (window != lastWindow || bounds != lastBounds) { generation++; tracker.Reset(); lastWindow = window; lastBounds = bounds; }
@@ -209,7 +223,10 @@ namespace ScreenCrosshair
                 Weapon found = reading == null ? null : reading.Active;
                 Weapon confirmed = tracker.Observe(found);
                 string active = confirmed == null ? "普通准星" : confirmed.Name + " · " + (confirmed.Kind == WeaponKind.Shotgun ? "霰弹枪" : confirmed.Kind == WeaponKind.Sniper ? "狙击枪" : "普通准星");
-                SetStatus((reading == null ? "等待画面稳定" : reading.Message) + "；" + active + " · " + LastMilliseconds.ToString("0") + " ms");
+                string result = (reading == null ? "等待画面稳定" : reading.Message) + "；" + active;
+                LastRecognizedText = reading == null ? "" : reading.RawText;
+                LastResult = DateTime.Now.ToString("HH:mm:ss") + "  " + result;
+                SetStatus(result + " · " + LastMilliseconds.ToString("0") + " ms", result);
             }
             catch (Exception error)
             {
