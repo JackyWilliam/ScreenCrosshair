@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -206,14 +205,8 @@ namespace ScreenCrosshair
                     {
                         using (Graphics g = Graphics.FromImage(crop)) g.CopyFromScreen(region.Location, Point.Empty, region.Size, CopyPixelOperation.SourceCopy);
                         if (Native.GetForegroundWindow() != window) return null;
-                        // A bounded crop and bounded upscale keep work independent of full-screen resolution.
-                        double scale = Math.Min(3.0, Math.Min(Math.Max(1.0, 96.0 / crop.Height), 1600.0 / crop.Width));
-                        using (var enlarged = new Bitmap(Math.Max(1, (int)(crop.Width * scale)), Math.Max(1, (int)(crop.Height * scale)), PixelFormat.Format32bppArgb))
-                        {
-                            using (Graphics g = Graphics.FromImage(enlarged)) { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(crop, new Rectangle(Point.Empty, enlarged.Size)); }
-                            if (ocr == null) ocr = new WindowsOcr();
-                            return ActiveWeaponDetector.Read(enlarged, ocr.ReadLayout(enlarged, language));
-                        }
+                        if (ocr == null) ocr = new WindowsOcr();
+                        return HudWeaponReader.Read(crop, ocr, language);
                     }
                 });
                 if (disposed || revision != generation || !config.AutoDetect) return;
