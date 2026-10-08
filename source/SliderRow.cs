@@ -22,8 +22,8 @@ namespace ScreenCrosshair
         {
             Size = new Size(486, 62); BackColor = Theme.Card; ForeColor = Theme.Text;
             minimum = min; maximum = max; current = min;
-            Controls.Add(Theme.Label(title, new Rectangle(0, 0, 240, 23)));
-            Controls.Add(Theme.Label("px", new Rectangle(461, 25, 25, 28), true));
+            Controls.Add(new Caption { Text = title, Bounds = new Rectangle(0, 0, 240, 23), ForeColor = Theme.Text, TextAlign = ContentAlignment.MiddleLeft });
+            Controls.Add(new Caption { Text = "px", Bounds = new Rectangle(461, 25, 25, 28), ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft });
             input = Theme.Input(new Rectangle(371, 25, 82, 28)); input.TextAlign = HorizontalAlignment.Right;
             input.AccessibleName = title + "（像素，支持小数）"; input.MaxLength = 12; Controls.Add(input);
             slider = new DecimalTrack(min, max) { Bounds = new Rectangle(0, 27, 353, 28), AccessibleName = title + "滑块" };
@@ -53,6 +53,18 @@ namespace ScreenCrosshair
             bool changed = current != next; current = next; slider.Value = current;
             if (format) { loading = true; input.Text = current.ToString("0.##", CultureInfo.InvariantCulture); input.ForeColor = Theme.Text; loading = false; }
             if (changed && ValueChanged != null) ValueChanged(this, EventArgs.Empty);
+        }
+
+        sealed class Caption : Label
+        {
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                if (Enabled) { base.OnPaint(e); return; }
+                // Label's default disabled rendering derives a near-black color from our dark background.
+                // Keep the control disabled, but use the same readable muted color as the other dark controls.
+                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Theme.Muted,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            }
         }
 
         sealed class DecimalTrack : Control
