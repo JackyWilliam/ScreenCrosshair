@@ -100,6 +100,17 @@ namespace ScreenCrosshair
         public readonly Panel Body = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
         readonly Panel titleBar;
         readonly Label titleLabel;
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams parameters = base.CreateParams;
+                // Form.DoubleBuffered does not include native child controls; compose the whole editor to avoid partial frames.
+                // This applies only to settings/dialog windows, never the layered crosshair overlay.
+                parameters.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+                return parameters;
+            }
+        }
         public ChromeForm()
         {
             AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
@@ -123,13 +134,13 @@ namespace ScreenCrosshair
         }
         protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); if (titleLabel != null) titleLabel.Text = Text; }
         protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using (var pen = new Pen(Theme.Border)) e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1); }
-        protected override void OnShown(EventArgs e)
+        protected override void OnLoad(EventArgs e)
         {
-            // Keep every control reachable on small work areas and high-DPI displays without shrinking text.
+            // Fit before the first visible frame so small work areas do not cause a second layout after showing.
             Rectangle area = Screen.FromControl(this).WorkingArea;
             Size = new Size(Math.Min(Width, area.Width - 24), Math.Min(Height, area.Height - 24));
             Left = Math.Max(area.Left, Math.Min(Left, area.Right - Width)); Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - Height));
-            base.OnShown(e);
+            base.OnLoad(e);
         }
         protected override void Dispose(bool disposing)
         {
