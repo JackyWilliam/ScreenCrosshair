@@ -9,7 +9,7 @@ using System.Windows.Forms;
 using System.Xml.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("屏幕准星")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
 
 namespace ScreenCrosshair
 {
@@ -34,6 +34,27 @@ namespace ScreenCrosshair
         public bool Outline = true;
         public bool CenterDot = false;
         public string Monitor = "";
+        public string ColorHex = "";
+        public bool AutoDetect = false;
+        public string OcrLanguage = "zh-Hans-CN";
+        public int ScanInterval = 1000;
+        public bool CaptureRegionSet = false;
+        public double CaptureX, CaptureY, CaptureWidth, CaptureHeight;
+
+        [XmlIgnore] public Color ForegroundColor
+        {
+            get { Color custom; return TryParseColor(ColorHex, out custom) ? custom : Colors[ColorIndex]; }
+        }
+
+        public static bool TryParseColor(string text, out Color color)
+        {
+            int value; string hex = (text ?? "").Trim().TrimStart('#');
+            if (hex.Length == 6 && int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out value))
+            { color = Color.FromArgb((value >> 16) & 255, (value >> 8) & 255, value & 255); return true; }
+            color = Color.Empty; return false;
+        }
+
+        public static string ToHex(Color color) { return "#" + color.R.ToString("X2") + color.G.ToString("X2") + color.B.ToString("X2"); }
 
         public static readonly Color[] Colors = { Color.FromArgb(80, 255, 100), Color.Cyan, Color.White, Color.FromArgb(255, 75, 90), Color.Yellow, Color.FromArgb(220, 110, 255) };
         public static readonly string[] ColorNames = { "荧光绿", "青色", "白色", "红色", "黄色", "紫色" };
@@ -44,9 +65,13 @@ namespace ScreenCrosshair
             Length = Math.Max(2, Math.Min(32, Length));
             Gap = Math.Max(0, Math.Min(20, Gap));
             Thickness = Math.Max(1, Math.Min(8, Thickness));
-            Shape = Math.Max(0, Math.Min(2, Shape));
+            Shape = Math.Max(0, Math.Min(4, Shape));
             ColorIndex = Math.Max(0, Math.Min(Colors.Length - 1, ColorIndex));
             Monitor = Monitor ?? "";
+            Color custom; ColorHex = TryParseColor(ColorHex, out custom) ? ToHex(custom) : "";
+            if (OcrLanguage != "en-US" && OcrLanguage != "zh-Hans-CN") OcrLanguage = "zh-Hans-CN";
+            if (ScanInterval != 500 && ScanInterval != 1000 && ScanInterval != 2000) ScanInterval = 1000;
+            if (!(CaptureX >= 0 && CaptureY >= 0 && CaptureWidth > 0 && CaptureHeight > 0 && CaptureX + CaptureWidth <= 1.001 && CaptureY + CaptureHeight <= 1.001)) CaptureRegionSet = false;
         }
 
         public static Settings Load(out string warning)
@@ -83,30 +108,33 @@ namespace ScreenCrosshair
     public static class Renderer
     {
         public static void Draw(Graphics g, Settings s, int cx, int cy)
+        { Draw(g, s, cx, cy, s.Shape); }
+
+        public static void Draw(Graphics g, Settings s, int cx, int cy, int shape)
         {
             // Solid pixel-aligned strokes avoid colored halos against a color-keyed transparent background.
             g.SmoothingMode = SmoothingMode.None;
             var blocks = new List<Rectangle>();
             int t = s.Thickness, d = s.Gap, n = s.Length;
             int half = t / 2;
-            if (s.Shape == 0)
+            if (shape == 0 || shape == 4)
             {
                 blocks.Add(new Rectangle(cx - half, cy - d - n, t, n));
-                blocks.Add(new Rectangle(cx - half, cy + d, t, n));
+                if (shape != 4) blocks.Add(new Rectangle(cx - half, cy + d, t, n));
                 blocks.Add(new Rectangle(cx - d - n, cy - half, n, t));
                 blocks.Add(new Rectangle(cx + d, cy - half, n, t));
             }
-            if (s.Shape == 1 || s.CenterDot)
+            if (shape == 1 || shape == 3 || s.CenterDot)
             {
-                int size = s.Shape == 1 ? Math.Max(2, s.Thickness + 2) : s.Thickness;
+                int size = shape == 1 ? Math.Max(2, s.Thickness + 2) : s.Thickness;
                 blocks.Add(new Rectangle(cx - size / 2, cy - size / 2, size, size));
             }
-            using (var color = new SolidBrush(Settings.Colors[s.ColorIndex]))
+            using (var color = new SolidBrush(s.ForegroundColor))
             {
                 if (s.Outline)
                     foreach (Rectangle r in blocks) { Rectangle edge = r; edge.Inflate(1, 1); g.FillRectangle(Brushes.Black, edge); }
                 foreach (Rectangle r in blocks) g.FillRectangle(color, r);
-                if (s.Shape == 2)
+                if (shape == 2 || shape == 3)
                 {
                     int radius = s.Length;
                     var circle = new Rectangle(cx - radius, cy - radius, radius * 2, radius * 2);
@@ -126,6 +154,9 @@ namespace ScreenCrosshair
         readonly NotifyIcon tray;
         readonly ToolStripMenuItem toggle;
         readonly System.Windows.Forms.Timer timer;
+        readonly System.Windows.Forms.Timer saveTimer;
+        bool dirty;
+        public readonly RecognitionController Recognition;
         SettingsWindow settingsWindow;
 
         public Overlay(Settings config, bool persistence)
@@ -142,6 +173,7 @@ namespace ScreenCrosshair
             TransparencyKey = BackColor;
             TopMost = true;
             DoubleBuffered = true;
+            ApplyTransparencyColor();
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
 
             var menu = new ContextMenuStrip();
@@ -157,6 +189,10 @@ namespace ScreenCrosshair
             timer = new System.Windows.Forms.Timer { Interval = 1000 };
             timer.Tick += delegate { RefreshPosition(); };
             timer.Start();
+            saveTimer = new System.Windows.Forms.Timer { Interval = 350 };
+            saveTimer.Tick += delegate { SaveNow(); };
+            Recognition = new RecognitionController(Config);
+            Recognition.Updated += delegate { Invalidate(); };
             RefreshPosition();
         }
 
@@ -222,9 +258,27 @@ namespace ScreenCrosshair
         public void Changed()
         {
             Config.Validate();
+            ApplyTransparencyColor();
+            Recognition.Reset();
             RefreshPosition();
             Invalidate();
             if (!persist) return;
+            // Slider drags repaint immediately; debounce disk writes until the user pauses.
+            dirty = true; saveTimer.Stop(); saveTimer.Start();
+        }
+
+        void ApplyTransparencyColor()
+        {
+            // A user can choose any RGB value, including the previous transparent color key.
+            Color key = Config.ForegroundColor.ToArgb() == Color.FromArgb(1, 2, 3).ToArgb() ? Color.FromArgb(2, 3, 4) : Color.FromArgb(1, 2, 3);
+            if (BackColor != key) { BackColor = key; TransparencyKey = key; }
+        }
+
+        void SaveNow()
+        {
+            saveTimer.Stop();
+            if (!dirty) return;
+            dirty = false;
             try { Config.Save(); }
             catch (Exception e) { Notify("设置未保存", e.Message); }
         }
@@ -239,7 +293,7 @@ namespace ScreenCrosshair
             settingsWindow.Activate();
         }
 
-        protected override void OnPaint(PaintEventArgs e) { Renderer.Draw(e.Graphics, Config, ClientSize.Width / 2, ClientSize.Height / 2); }
+        protected override void OnPaint(PaintEventArgs e) { Renderer.Draw(e.Graphics, Config, ClientSize.Width / 2, ClientSize.Height / 2, Recognition == null ? Config.Shape : Recognition.DisplayShape); }
 
         protected override void WndProc(ref Message m)
         {
@@ -257,6 +311,7 @@ namespace ScreenCrosshair
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             timer.Stop(); timer.Dispose();
+            Recognition.Dispose(); SaveNow(); saveTimer.Dispose();
             if (settingsWindow != null) settingsWindow.Dispose();
             tray.Visible = false;
             tray.ContextMenuStrip.Dispose(); tray.Dispose();
@@ -277,103 +332,6 @@ namespace ScreenCrosshair
                 for (int y = Height / 2 % 24; y < Height; y += 24) e.Graphics.DrawLine(grid, 0, y, Width, y);
             }
             Renderer.Draw(e.Graphics, Config, Width / 2, Height / 2);
-        }
-    }
-
-    public class SettingsWindow : Form
-    {
-        readonly Overlay overlay;
-        readonly Preview preview;
-        readonly ComboBox shape = new ComboBox(), color = new ComboBox(), monitor = new ComboBox();
-        readonly NumericUpDown length = new NumericUpDown(), gap = new NumericUpDown(), thickness = new NumericUpDown();
-        readonly CheckBox outline = new CheckBox(), dot = new CheckBox();
-        readonly Label status = new Label();
-        bool loading;
-        Screen[] screens;
-
-        public SettingsWindow(Overlay owner)
-        {
-            overlay = owner;
-            Font = new Font("Microsoft YaHei UI", 10F);
-            AutoScaleMode = AutoScaleMode.Dpi;
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            Text = "屏幕准星 · 调整";
-            Icon = owner.Icon;
-            ClientSize = new Size(584, 430);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
-            StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(247, 249, 252);
-            var title = new Label { Text = "屏幕准星", Font = new Font(Font.FontFamily, 19F, FontStyle.Bold), Bounds = new Rectangle(24, 18, 280, 42) };
-            Controls.Add(title);
-            Controls.Add(new Label { Text = "始终置顶 · 鼠标穿透 · 调整即时生效", Bounds = new Rectangle(25, 65, 530, 26), ForeColor = Color.DimGray });
-            preview = new Preview(owner.Config) { Bounds = new Rectangle(24, 105, 232, 198) };
-            Controls.Add(preview);
-            Controls.Add(new Label { Text = "实际像素预览", TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray, Bounds = new Rectangle(24, 309, 232, 25) });
-            AddRow("样式", shape, 105); shape.Items.AddRange(new object[] { "十字", "圆点", "圆环" });
-            AddRow("颜色", color, 141); color.Items.AddRange(Settings.ColorNames);
-            AddNumber("长度 / 半径", length, 177, 2, 32);
-            AddNumber("中心间隔", gap, 213, 0, 20);
-            AddNumber("线条粗细", thickness, 249, 1, 8);
-            outline.Text = "黑色描边"; outline.SetBounds(288, 286, 116, 30);
-            dot.Text = "中心点"; dot.SetBounds(428, 286, 120, 30);
-            Controls.Add(outline); Controls.Add(dot);
-            Controls.Add(new Label { Text = "显示器", Bounds = new Rectangle(24, 346, 65, 25) });
-            monitor.SetBounds(92, 343, 272, 29); monitor.DropDownStyle = ComboBoxStyle.DropDownList; Controls.Add(monitor);
-            var reset = new Button { Text = "恢复默认", Bounds = new Rectangle(384, 343, 94, 30) };
-            reset.Click += delegate
-            {
-                Settings s = owner.Config;
-                s.Length = 8; s.Gap = 4; s.Thickness = 2; s.Shape = 0; s.ColorIndex = 0; s.Outline = true; s.CenterDot = false;
-                Reload(); overlay.Changed();
-            };
-            Controls.Add(reset);
-            var done = new Button { Text = "完成", Bounds = new Rectangle(486, 343, 74, 30) };
-            done.Click += delegate { Close(); }; Controls.Add(done);
-            status.SetBounds(24, 388, 542, 30); status.Font = new Font(Font.FontFamily, 8.5F); status.ForeColor = Color.DimGray; Controls.Add(status);
-            shape.SelectedIndexChanged += UpdateSettings; color.SelectedIndexChanged += UpdateSettings; monitor.SelectedIndexChanged += UpdateSettings;
-            length.ValueChanged += UpdateSettings; gap.ValueChanged += UpdateSettings; thickness.ValueChanged += UpdateSettings;
-            outline.CheckedChanged += UpdateSettings; dot.CheckedChanged += UpdateSettings;
-            Reload();
-        }
-
-        void AddRow(string text, ComboBox control, int y)
-        {
-            Controls.Add(new Label { Text = text, Bounds = new Rectangle(280, y + 3, 112, 26) });
-            control.SetBounds(397, y, 163, 29); control.DropDownStyle = ComboBoxStyle.DropDownList; Controls.Add(control);
-        }
-
-        void AddNumber(string text, NumericUpDown control, int y, int min, int max)
-        {
-            Controls.Add(new Label { Text = text, Bounds = new Rectangle(280, y + 3, 112, 26) });
-            control.SetBounds(397, y, 163, 29); control.Minimum = min; control.Maximum = max; Controls.Add(control);
-        }
-
-        public void Reload()
-        {
-            loading = true;
-            Settings s = overlay.Config;
-            shape.SelectedIndex = s.Shape; color.SelectedIndex = s.ColorIndex;
-            length.Value = s.Length; gap.Value = s.Gap; thickness.Value = s.Thickness;
-            outline.Checked = s.Outline; dot.Checked = s.CenterDot;
-            screens = Screen.AllScreens; monitor.Items.Clear();
-            foreach (Screen screen in screens) monitor.Items.Add(screen.DeviceName + (screen.Primary ? "（主屏）" : "") + " " + screen.Bounds.Width + "×" + screen.Bounds.Height);
-            monitor.SelectedIndex = Array.FindIndex(screens, delegate(Screen screen) { return screen.DeviceName == overlay.SelectedScreen().DeviceName; });
-            status.Text = overlay.HotkeyErrors.Count == 0 ? "Ctrl+Alt+F8 显示/隐藏    ·    F9 调整    ·    F10 换屏    ·    F11 退出" : "快捷键被占用：" + string.Join("、", overlay.HotkeyErrors.ToArray()) + "；请使用托盘菜单。";
-            loading = false;
-            EnableFields(); preview.Invalidate();
-        }
-
-        void EnableFields() { length.Enabled = shape.SelectedIndex != 1; gap.Enabled = shape.SelectedIndex == 0; dot.Enabled = shape.SelectedIndex != 1; }
-        void UpdateSettings(object sender, EventArgs args)
-        {
-            if (loading) return;
-            Settings s = overlay.Config;
-            s.Shape = shape.SelectedIndex; s.ColorIndex = color.SelectedIndex;
-            s.Length = (int)length.Value; s.Gap = (int)gap.Value; s.Thickness = (int)thickness.Value;
-            s.Outline = outline.Checked; s.CenterDot = dot.Checked;
-            if (monitor.SelectedIndex >= 0) s.Monitor = screens[monitor.SelectedIndex].DeviceName;
-            EnableFields(); overlay.Changed(); preview.Invalidate();
         }
     }
 
