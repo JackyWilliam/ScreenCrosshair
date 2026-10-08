@@ -20,6 +20,7 @@ namespace ScreenCrosshair
     {
         public Weapon Active;
         public string Message;
+        public string RawText;
         public readonly List<WeaponLabel> Labels = new List<WeaponLabel>();
     }
 
@@ -27,7 +28,7 @@ namespace ScreenCrosshair
     {
         public static ActiveWeaponReading Read(Bitmap original, OcrReading text)
         {
-            var result = new ActiveWeaponReading();
+            var result = new ActiveWeaponReading { RawText = text.Text };
             // OCR can use a contrast-enhanced copy, but activation must always use the original HUD colors.
             byte[] pixels = new byte[original.Width * original.Height * 4];
             BitmapData data = original.LockBits(new Rectangle(Point.Empty, original.Size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);

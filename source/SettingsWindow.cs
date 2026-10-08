@@ -26,15 +26,17 @@ namespace ScreenCrosshair
     {
         readonly Overlay overlay;
         readonly Preview preview;
-        readonly ComboBox shape = new ComboBox(), color = new ComboBox(), monitor = new ComboBox(), language = new ComboBox(), interval = new ComboBox();
+        readonly ComboBox profile = new ComboBox(), shape = new ComboBox(), color = new ComboBox(), monitor = new ComboBox(), language = new ComboBox(), interval = new ComboBox();
         readonly SliderRow length = new SliderRow("长度 / 半径", 2, 32), gap = new SliderRow("中心间隔", 0, 20), thickness = new SliderRow("线条粗细", 1, 8);
         readonly CheckBox outline = new CheckBox(), dot = new CheckBox(), automatic = new CheckBox();
         readonly TextBox hex = new TextBox();
         readonly Button pickColor = new Button(), chooseRegion = new Button();
-        readonly Label status = new Label(), recognitionStatus = new Label(), regionStatus = new Label();
+        readonly Label status = new Label(), recognitionStatus = new Label(), regionStatus = new Label(), previewTitle = new Label();
         readonly System.Windows.Forms.Timer statusTimer;
         bool loading, choosing;
         Screen[] screens;
+        WeaponKind EditingKind { get { return (WeaponKind)Math.Max(0, profile.SelectedIndex); } }
+        CrosshairStyle EditingStyle { get { return overlay.Config.Profile(EditingKind); } }
 
         public SettingsWindow(Overlay owner)
         {
@@ -45,10 +47,13 @@ namespace ScreenCrosshair
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(247, 249, 252);
             Controls.Add(new Label { Text = "屏幕准星", Font = new Font(Font.FontFamily, 19F, FontStyle.Bold), Bounds = new Rectangle(24, 16, 400, 42) });
-            Controls.Add(new Label { Text = "即时预览 · 自定义颜色 · Apex 武器样式", Bounds = new Rectangle(25, 61, 650, 26), ForeColor = Color.DimGray });
+            Controls.Add(new Label { Text = "三套配置 · 分别保存 · 即时预览", Bounds = new Rectangle(25, 61, 260, 26), ForeColor = Color.DimGray });
+            Controls.Add(new Label { Text = "正在调整", Bounds = new Rectangle(300, 61, 88, 26) });
+            profile.Name = "EditingProfile"; Combo(profile, new Rectangle(395, 58, 301, 30));
+            profile.Items.AddRange(new object[] { "普通 / 手动", "霰弹枪", "狙击枪" }); profile.SelectedIndex = 0;
             preview = new Preview(owner.Config) { Bounds = new Rectangle(24, 102, 248, 250) }; Controls.Add(preview);
-            Controls.Add(new Label { Text = "手动 / 普通武器样式预览", TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray, Bounds = new Rectangle(24, 361, 248, 25) });
-            Controls.Add(new Label { Text = "普通样式", Bounds = new Rectangle(300, 102, 88, 26) });
+            previewTitle.TextAlign = ContentAlignment.MiddleCenter; previewTitle.ForeColor = Color.DimGray; previewTitle.Bounds = new Rectangle(24, 361, 248, 25); Controls.Add(previewTitle);
+            Controls.Add(new Label { Text = "样式", Bounds = new Rectangle(300, 102, 88, 26) });
             Combo(shape, new Rectangle(395, 99, 301, 30));
             shape.Items.AddRange(new object[] { "十字", "圆点", "圆环", "霰弹枪：圆环＋中心点", "狙击枪：无下方竖线" });
             Combo(color, new Rectangle(300, 140, 122, 30)); color.Items.AddRange(Settings.ColorNames); color.Items.Add("自定义");
@@ -61,6 +66,8 @@ namespace ScreenCrosshair
 
             var autoPanel = new Panel { Bounds = new Rectangle(24, 407, 672, 190), BackColor = Color.FromArgb(234, 239, 247) }; Controls.Add(autoPanel);
             automatic.Text = "Apex 自动识别武器"; automatic.SetBounds(14, 10, 230, 28); autoPanel.Controls.Add(automatic);
+            var history = new Button { Text = "状态记录…", Bounds = new Rectangle(316, 9, 146, 31) };
+            history.Click += delegate { ShowRecognitionHistory(); }; autoPanel.Controls.Add(history);
             chooseRegion.Text = "框选两个枪名…"; chooseRegion.SetBounds(476, 9, 180, 31); autoPanel.Controls.Add(chooseRegion);
             autoPanel.Controls.Add(new Label { Text = "游戏语言", Bounds = new Rectangle(16, 52, 77, 25) });
             Combo(language, new Rectangle(95, 48, 180, 30), autoPanel); language.Items.AddRange(new object[] { "简体中文", "English" });
@@ -68,18 +75,20 @@ namespace ScreenCrosshair
             Combo(interval, new Rectangle(402, 48, 254, 30), autoPanel); interval.Items.AddRange(new object[] { "0.5 秒（切换较快）", "1 秒（默认）", "2 秒（减少识别次数）" });
             regionStatus.SetBounds(16, 88, 640, 25); regionStatus.ForeColor = Color.DimGray; autoPanel.Controls.Add(regionStatus);
             recognitionStatus.SetBounds(16, 116, 640, 48); recognitionStatus.ForeColor = Color.FromArgb(35, 65, 94); autoPanel.Controls.Add(recognitionStatus);
-            autoPanel.Controls.Add(new Label { Text = "霰弹枪 → 圆环＋中心点；狙击枪 → 无下方竖线；其余 → 普通样式", Bounds = new Rectangle(16, 165, 640, 22), Font = new Font(Font.FontFamily, 9F) });
+            autoPanel.Controls.Add(new Label { Text = "识别后使用对应配置；关闭自动识别时使用普通配置。", Bounds = new Rectangle(16, 165, 640, 22), Font = new Font(Font.FontFamily, 9F) });
 
             Controls.Add(new Label { Text = "显示器", Bounds = new Rectangle(24, 619, 66, 26) });
             Combo(monitor, new Rectangle(94, 615, 338, 30));
-            var reset = new Button { Text = "重置外观", Bounds = new Rectangle(449, 614, 119, 32) };
+            var reset = new Button { Text = "重置当前", Bounds = new Rectangle(449, 614, 119, 32) };
             reset.Click += delegate
             {
-                Settings s = overlay.Config; s.Length = 8; s.Gap = 4; s.Thickness = 2; s.Shape = 0; s.ColorIndex = 0; s.ColorHex = ""; s.Outline = true; s.CenterDot = false;
-                Reload(); overlay.Changed();
+                overlay.Config.ResetProfile(EditingKind);
+                Reload(); overlay.Changed(false);
             }; Controls.Add(reset);
             var done = new Button { Text = "完成", Bounds = new Rectangle(579, 614, 117, 32) }; done.Click += delegate { Close(); }; Controls.Add(done);
             status.SetBounds(24, 665, 672, 26); status.Font = new Font(Font.FontFamily, 8.5F); status.ForeColor = Color.DimGray; Controls.Add(status);
+            // Choosing an editor tab only rebinds the controls/preview; it must not switch the active game profile.
+            profile.SelectedIndexChanged += delegate { if (!loading) Reload(); };
             shape.SelectedIndexChanged += UpdateSettings; monitor.SelectedIndexChanged += UpdateSettings;
             language.SelectedIndexChanged += UpdateSettings; interval.SelectedIndexChanged += UpdateSettings; automatic.CheckedChanged += UpdateSettings;
             length.ValueChanged += UpdateSettings; gap.ValueChanged += UpdateSettings; thickness.ValueChanged += UpdateSettings;
@@ -87,9 +96,10 @@ namespace ScreenCrosshair
             color.SelectedIndexChanged += delegate
             {
                 if (loading) return;
-                if (color.SelectedIndex < Settings.Colors.Length) { overlay.Config.ColorIndex = color.SelectedIndex; overlay.Config.ColorHex = ""; }
-                else overlay.Config.ColorHex = Settings.ToHex(overlay.Config.ForegroundColor);
-                RefreshColor(); overlay.Changed(); preview.Invalidate();
+                CrosshairStyle current = EditingStyle;
+                if (color.SelectedIndex < Settings.Colors.Length) { current.ColorIndex = color.SelectedIndex; current.ColorHex = ""; }
+                else current.ColorHex = Settings.ToHex(current.ForegroundColor);
+                RefreshColor(); overlay.Changed(false); preview.Invalidate();
             };
             hex.TextChanged += delegate
             {
@@ -98,17 +108,17 @@ namespace ScreenCrosshair
                 bool valid = Settings.TryParseColor(hex.Text, out custom);
                 hex.BackColor = valid ? Color.White : Color.FromArgb(255, 233, 233);
                 if (!valid) return;
-                overlay.Config.ColorHex = Settings.ToHex(custom);
+                EditingStyle.ColorHex = Settings.ToHex(custom);
                 loading = true; color.SelectedIndex = 6; loading = false;
                 pickColor.BackColor = custom; pickColor.ForeColor = custom.GetBrightness() < 0.5 ? Color.White : Color.Black;
-                overlay.Changed(); preview.Invalidate();
+                overlay.Changed(false); preview.Invalidate();
             };
             pickColor.Click += delegate
             {
-                using (var dialog = new ColorDialog { Color = overlay.Config.ForegroundColor, FullOpen = true })
+                using (var dialog = new ColorDialog { Color = EditingStyle.ForegroundColor, FullOpen = true })
                     if (dialog.ShowDialog(this) == DialogResult.OK)
                     {
-                        overlay.Config.ColorHex = Settings.ToHex(dialog.Color); RefreshColor(); overlay.Changed(); preview.Invalidate();
+                        EditingStyle.ColorHex = Settings.ToHex(dialog.Color); RefreshColor(); overlay.Changed(false); preview.Invalidate();
                     }
             };
             chooseRegion.Click += ChooseRegion;
@@ -123,8 +133,9 @@ namespace ScreenCrosshair
         void RefreshColor()
         {
             bool previous = loading; loading = true;
-            Color selected = overlay.Config.ForegroundColor;
-            color.SelectedIndex = overlay.Config.ColorHex.Length == 0 ? overlay.Config.ColorIndex : 6;
+            CrosshairStyle current = EditingStyle;
+            Color selected = current.ForegroundColor;
+            color.SelectedIndex = current.ColorHex.Length == 0 ? current.ColorIndex : 6;
             hex.Text = Settings.ToHex(selected); hex.BackColor = Color.White;
             pickColor.BackColor = selected; pickColor.ForeColor = selected.GetBrightness() < 0.5 ? Color.White : Color.Black;
             loading = previous;
@@ -132,8 +143,10 @@ namespace ScreenCrosshair
         public void Reload()
         {
             loading = true; Settings s = overlay.Config;
-            shape.SelectedIndex = s.Shape; length.Value = s.Length; gap.Value = s.Gap; thickness.Value = s.Thickness;
-            outline.Checked = s.Outline; dot.Checked = s.CenterDot;
+            CrosshairStyle current = EditingStyle;
+            preview.Config = current; previewTitle.Text = profile.Text + "配置 · 预览";
+            shape.SelectedIndex = current.Shape; length.Value = current.Length; gap.Value = current.Gap; thickness.Value = current.Thickness;
+            outline.Checked = current.Outline; dot.Checked = current.CenterDot;
             automatic.Checked = s.AutoDetect; language.SelectedIndex = s.OcrLanguage == "en-US" ? 1 : 0;
             interval.SelectedIndex = s.ScanInterval == 500 ? 0 : s.ScanInterval == 2000 ? 2 : 1;
             RefreshColor(); screens = Screen.AllScreens; monitor.Items.Clear();
@@ -149,12 +162,24 @@ namespace ScreenCrosshair
         void UpdateSettings(object sender, EventArgs args)
         {
             if (loading) return; Settings s = overlay.Config;
-            s.Shape = shape.SelectedIndex; s.Length = length.Value; s.Gap = gap.Value; s.Thickness = thickness.Value;
-            s.Outline = outline.Checked; s.CenterDot = dot.Checked;
+            CrosshairStyle current = EditingStyle;
+            current.Shape = shape.SelectedIndex; current.Length = length.Value; current.Gap = gap.Value; current.Thickness = thickness.Value;
+            current.Outline = outline.Checked; current.CenterDot = dot.Checked;
             s.AutoDetect = automatic.Checked; s.OcrLanguage = language.SelectedIndex == 1 ? "en-US" : "zh-Hans-CN";
             s.ScanInterval = interval.SelectedIndex == 0 ? 500 : interval.SelectedIndex == 2 ? 2000 : 1000;
             if (monitor.SelectedIndex >= 0) s.Monitor = screens[monitor.SelectedIndex].DeviceName;
-            EnableFields(); overlay.Changed(); preview.Invalidate();
+            EnableFields(); overlay.Changed(sender == automatic || sender == language || sender == interval); preview.Invalidate();
+        }
+
+        void ShowRecognitionHistory()
+        {
+            // Opening settings necessarily moves focus away from Apex; keep the preceding reading available for diagnosis.
+            using (var dialog = new Form { Text = "识别状态记录", Font = Font, ClientSize = new Size(760, 440), StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false })
+            {
+                dialog.Controls.Add(new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, BackColor = Color.White,
+                    Text = "仅保留本次运行最近 30 次状态变化，不写入文件。\r\n切到设置/聊天会暂停，切回 Apex 自动继续。\r\n\r\n" + overlay.Recognition.HistoryText + "\r\n\r\n最近一次检测：\r\n" + (overlay.Recognition.LastResult ?? "尚未检测") + "\r\nOCR 读到的文字：\r\n" + (overlay.Recognition.LastRecognizedText ?? "尚未检测") });
+                dialog.ShowDialog(this);
+            }
         }
 
         async void ChooseRegion(object sender, EventArgs args)
