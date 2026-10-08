@@ -101,6 +101,13 @@ namespace ScreenCrosshair
         [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr window, out Rect rect);
         [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr window, ref Point point);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+        [DllImport("user32.dll")] static extern bool GetWindowDisplayAffinity(IntPtr window, out uint affinity);
+        public static bool CaptureRestricted(IntPtr window)
+        {
+            uint affinity;
+            // A failed query is not evidence of a restriction (some window types do not support it).
+            return GetWindowDisplayAffinity(window, out affinity) && affinity != 0;
+        }
         public static bool Foreground(out IntPtr handle, out Rectangle bounds)
         {
             handle = Native.GetForegroundWindow(); bounds = Rectangle.Empty;
@@ -175,6 +182,23 @@ namespace ScreenCrosshair
             }
             if (Updated != null) Updated();
         }
+        bool PauseIfCaptureRestricted(IntPtr window)
+        {
+            if (!ApexWindow.CaptureRestricted(window)) return false;
+            PauseForCaptureRestriction();
+            return true;
+        }
+        void PauseForCaptureRestriction()
+        {
+            const string message = "已暂停：Apex 窗口限制截图；限制解除后自动继续";
+            // Excluded windows expose the desktop behind them. Discard that text and invalidate in-flight results.
+            tracker.Reset(); generation++;
+            LastRecognizedText = ""; LastMilliseconds = 0;
+            if (Status == message) return;
+            LastResult = DateTime.Now.ToString("HH:mm:ss") + "  " + message;
+            SetStatus(message);
+            // Do not set failed: only window metadata is polled until capture is available again.
+        }
         async void Tick(object sender, EventArgs args)
         {
             if (disposed || !config.AutoDetect || !config.CaptureRegionSet || failed) return;
@@ -187,24 +211,28 @@ namespace ScreenCrosshair
                 return;
             }
             if (window != lastWindow || bounds != lastBounds) { generation++; tracker.Reset(); lastWindow = window; lastBounds = bounds; }
+            if (PauseIfCaptureRestricted(window)) return;
             if (busy) return;
             Rectangle region = ApexWindow.CaptureBounds(config, bounds);
             if (region.Width < 12 || region.Height < 6 || region.Width > 1600 || region.Height > 400)
             { SetStatus("识别区域不合适，请把两个枪名一起框入"); return; }
             int revision = generation;
             string language = config.OcrLanguage;
+            bool captureRestricted = false;
             busy = true;
             try
             {
                 var watch = Stopwatch.StartNew();
                 ActiveWeaponReading reading = await Task.Run(delegate
                 {
-                    // Check both sides of capture: an Alt-Tab mid-capture must never produce a classification.
+                    // Check both sides: focus or capture policy may change while the worker is running.
                     if (Native.GetForegroundWindow() != window) return null;
+                    if (captureRestricted = ApexWindow.CaptureRestricted(window)) return null;
                     using (var crop = new Bitmap(region.Width, region.Height, PixelFormat.Format32bppArgb))
                     {
                         using (Graphics g = Graphics.FromImage(crop)) g.CopyFromScreen(region.Location, Point.Empty, region.Size, CopyPixelOperation.SourceCopy);
                         if (Native.GetForegroundWindow() != window) return null;
+                        if (captureRestricted = ApexWindow.CaptureRestricted(window)) return null;
                         if (ocr == null) ocr = new WindowsOcr();
                         return HudWeaponReader.Read(crop, ocr, language);
                     }
@@ -212,6 +240,8 @@ namespace ScreenCrosshair
                 if (disposed || revision != generation || !config.AutoDetect) return;
                 IntPtr current; Rectangle currentBounds;
                 if (!ApexWindow.Foreground(out current, out currentBounds) || current != window || currentBounds != bounds) { Reset(); return; }
+                if (captureRestricted) { PauseForCaptureRestriction(); return; }
+                if (PauseIfCaptureRestricted(window)) return;
                 LastMilliseconds = watch.Elapsed.TotalMilliseconds;
                 Weapon found = reading == null ? null : reading.Active;
                 Weapon confirmed = tracker.Observe(found);
@@ -225,6 +255,7 @@ namespace ScreenCrosshair
             {
                 if (!disposed && revision == generation)
                 {
+                    if (PauseIfCaptureRestricted(window)) return;
                     failed = true; tracker.Reset();
                     SetStatus("识别已暂停：" + error.GetBaseException().Message);
                 }

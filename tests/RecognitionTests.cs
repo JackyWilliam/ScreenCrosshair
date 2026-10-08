@@ -15,6 +15,7 @@ public static class RecognitionTests
 {
     static int checks, exitCode;
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern bool SetWindowDisplayAffinity(IntPtr window, uint affinity);
     static void Assert(bool condition, string label) { if (!condition) throw new Exception(label); Console.WriteLine("PASS " + label); checks++; }
     static Weapon Find(string text) { return WeaponCatalog.Match(text); }
     static void UnitChecks()
@@ -218,6 +219,46 @@ public static class RecognitionTests
             Assert(overlay.Recognition.HistoryText.Split(new[] { Environment.NewLine }, StringSplitOptions.None).Length == before, "Repeated same state does not flood history");
             for (int i = 0; i < 50; i++) { legacy.AutoDetect = !legacy.AutoDetect; overlay.Recognition.Reset(); }
             Assert(overlay.Recognition.HistoryText.Split(new[] { Environment.NewLine }, StringSplitOptions.None).Length == 30, "Status history is bounded to 30 transitions");
+        }
+    }
+
+    static void CaptureRestrictionChecks()
+    {
+        var config = new Settings { AutoDetect = true, CaptureRegionSet = true, CaptureLayoutVersion = 2 };
+        config.Validate();
+        // Only this unshown, test-owned window is modified; no game handle or foreground capture is used.
+        using (var window = new Form { Opacity = 0.99, ShowInTaskbar = false })
+        using (var recognition = new RecognitionController(config))
+        {
+            var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            var controller = typeof(RecognitionController);
+            var guard = controller.GetMethod("PauseIfCaptureRestricted", flags);
+            var tracker = (StableWeaponTracker)controller.GetField("tracker", flags).GetValue(recognition);
+            var timer = (System.Windows.Forms.Timer)controller.GetField("timer", flags).GetValue(recognition);
+            timer.Stop();
+            IntPtr handle = window.Handle;
+            Assert(SetWindowDisplayAffinity(handle, 0) && !(bool)guard.Invoke(recognition, new object[] { handle }), "Unrestricted window allows recognition");
+            foreach (uint affinity in new uint[] { 1, 0x11 })
+            {
+                tracker.Observe(Find("MASTIFF")); tracker.Observe(Find("MASTIFF"));
+                controller.GetProperty("LastRecognizedText").GetSetMethod(true).Invoke(recognition, new object[] { "stale desktop text" });
+                controller.GetProperty("LastMilliseconds").GetSetMethod(true).Invoke(recognition, new object[] { 42.0 });
+                Assert(SetWindowDisplayAffinity(handle, affinity) && ApexWindow.CaptureRestricted(handle), "Native capture restriction detected: " + affinity);
+                Assert((bool)guard.Invoke(recognition, new object[] { handle }) && recognition.Status.Contains("窗口限制截图"), "Capture restriction pauses with an explicit explanation");
+                Assert(ReferenceEquals(recognition.DisplayStyle, config) && recognition.LastRecognizedText == "" && recognition.LastMilliseconds == 0
+                    && recognition.LastResult.Contains("窗口限制截图"), "Capture pause clears stale OCR and restores ordinary profile");
+                string history = recognition.HistoryText;
+                int generation = (int)controller.GetField("generation", flags).GetValue(recognition);
+                guard.Invoke(recognition, new object[] { handle });
+                Assert(recognition.HistoryText == history && (int)controller.GetField("generation", flags).GetValue(recognition) > generation,
+                    "Repeated restricted polls invalidate pending work without flooding history");
+                Assert(SetWindowDisplayAffinity(handle, 0) && !(bool)guard.Invoke(recognition, new object[] { handle })
+                    && !(bool)controller.GetField("failed", flags).GetValue(recognition), "Lifting restriction allows retry without manual reset");
+                Assert(tracker.Observe(Find("MASTIFF")) == null && tracker.Observe(Find("MASTIFF")) == Find("MASTIFF"),
+                    "After capture restriction two fresh observations are required");
+            }
+            Assert(!ApexWindow.CaptureRestricted(new IntPtr(-1)), "Failed affinity query is not reported as capture restriction");
+            Assert(controller.GetField("ocr", flags).GetValue(recognition) == null, "Capture restriction checks do not initialize OCR");
         }
     }
 
@@ -572,7 +613,7 @@ public static class RecognitionTests
     public static int Main(string[] args)
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-        try { UnitChecks(); ScopedPresetChecks(); ScopedPresetUiChecks(); CommonParameterChecks(); DecimalPresetChecks(); CustomPartChecks(); ImagePipeline(); HighlightChecks(); NumericHudChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+        try { UnitChecks(); ScopedPresetChecks(); ScopedPresetUiChecks(); CommonParameterChecks(); DecimalPresetChecks(); CustomPartChecks(); ImagePipeline(); HighlightChecks(); NumericHudChecks(); ProfileChecks(); CaptureRestrictionChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
         if (!args.Contains("--interactive")) { Console.WriteLine("SUCCESS: " + checks + " assertions; interactive screen-capture test not requested."); return 0; }
         // The executable is named r5apex solely so the production foreground guard can be tested end to end.
         // All captured pixels belong to this synthetic window; no game process is modified or inspected.
