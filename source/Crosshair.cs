@@ -9,7 +9,7 @@ using System.Windows.Forms;
 using System.Xml.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("屏幕准星")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
 
 namespace ScreenCrosshair
 {
@@ -26,9 +26,9 @@ namespace ScreenCrosshair
 
     public class CrosshairStyle
     {
-        public int Length = 8;
-        public int Gap = 4;
-        public int Thickness = 2;
+        public double Length = 8;
+        public double Gap = 4;
+        public double Thickness = 2;
         public int Shape = 0;
         public int ColorIndex = 0;
         public bool Outline = true;
@@ -45,12 +45,34 @@ namespace ScreenCrosshair
             return new CrosshairStyle { Length = Length, Gap = Gap, Thickness = Thickness, Shape = shape, ColorIndex = ColorIndex, ColorHex = ColorHex, Outline = Outline, CenterDot = CenterDot };
         }
 
+        public void Apply(CrosshairStyle source)
+        {
+            Length = source.Length; Gap = source.Gap; Thickness = source.Thickness; Shape = source.Shape;
+            ColorIndex = source.ColorIndex; ColorHex = source.ColorHex; Outline = source.Outline; CenterDot = source.CenterDot;
+        }
+
+        public bool SameAppearance(CrosshairStyle other)
+        {
+            return other != null && Length == other.Length && Gap == other.Gap && Thickness == other.Thickness && Shape == other.Shape
+                && ColorIndex == other.ColorIndex && ColorHex == other.ColorHex && Outline == other.Outline && CenterDot == other.CenterDot;
+        }
+
+        static double Dimension(double value, double min, double max, double fallback)
+        { return double.IsNaN(value) || double.IsInfinity(value) ? fallback : Math.Round(Math.Max(min, Math.Min(max, value)), 2); }
+
         public void ValidateAppearance()
         {
-            Length = Math.Max(2, Math.Min(32, Length)); Gap = Math.Max(0, Math.Min(20, Gap)); Thickness = Math.Max(1, Math.Min(8, Thickness));
+            Length = Dimension(Length, 2, 32, 8); Gap = Dimension(Gap, 0, 20, 4); Thickness = Dimension(Thickness, 0.1, 8, 2);
             Shape = Math.Max(0, Math.Min(4, Shape)); ColorIndex = Math.Max(0, Math.Min(Settings.Colors.Length - 1, ColorIndex));
             Color custom; ColorHex = Settings.TryParseColor(ColorHex, out custom) ? Settings.ToHex(custom) : "";
         }
+    }
+
+    public class CustomPreset
+    {
+        public string Name = "";
+        public CrosshairStyle Style = new CrosshairStyle();
+        public override string ToString() { return Name; }
     }
 
     public class Settings : CrosshairStyle
@@ -59,6 +81,7 @@ namespace ScreenCrosshair
         // Missing class profiles copy the old shared appearance once; subsequent edits stay independent.
         public CrosshairStyle Shotgun;
         public CrosshairStyle Sniper;
+        public List<CustomPreset> CustomPresets = new List<CustomPreset>();
         public string Monitor = "";
         public bool AutoDetect = false;
         public string OcrLanguage = "zh-Hans-CN";
@@ -66,6 +89,18 @@ namespace ScreenCrosshair
         public bool CaptureRegionSet = false;
         public int CaptureLayoutVersion = 0;
         public double CaptureX, CaptureY, CaptureWidth, CaptureHeight;
+
+        public CustomPreset SavePreset(string name, CrosshairStyle style)
+        {
+            name = (name ?? "").Trim();
+            if (name.Length == 0 || name.Length > 40 || Array.Exists(name.ToCharArray(), char.IsControl))
+                throw new ArgumentException("名称需为 1–40 个可见字符。");
+            CustomPreset preset = CustomPresets.Find(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (preset == null) { preset = new CustomPreset { Name = name }; CustomPresets.Add(preset); }
+            // Store snapshots: editing a weapon profile must never mutate a saved preset, or vice versa.
+            preset.Style = style.Copy(style.Shape); preset.Style.ValidateAppearance();
+            return preset;
+        }
 
         public CrosshairStyle Profile(WeaponKind kind)
         {
@@ -101,6 +136,10 @@ namespace ScreenCrosshair
         {
             ValidateAppearance();
             Profile(WeaponKind.Shotgun).ValidateAppearance(); Profile(WeaponKind.Sniper).ValidateAppearance();
+            if (CustomPresets == null) CustomPresets = new List<CustomPreset>();
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CustomPresets.RemoveAll(p => p == null || string.IsNullOrWhiteSpace(p.Name) || p.Style == null || !names.Add(p.Name.Trim()));
+            foreach (CustomPreset preset in CustomPresets) { preset.Name = preset.Name.Trim(); preset.Style.ValidateAppearance(); }
             Monitor = Monitor ?? "";
             if (OcrLanguage != "en-US" && OcrLanguage != "zh-Hans-CN") OcrLanguage = "zh-Hans-CN";
             if (ScanInterval != 500 && ScanInterval != 1000 && ScanInterval != 2000) ScanInterval = 1000;
@@ -148,36 +187,59 @@ namespace ScreenCrosshair
 
         public static void Draw(Graphics g, CrosshairStyle s, int cx, int cy, int shape)
         {
-            // Solid pixel-aligned strokes avoid colored halos against a color-keyed transparent background.
             g.SmoothingMode = SmoothingMode.None;
-            var blocks = new List<Rectangle>();
-            int t = s.Thickness, d = s.Gap, n = s.Length;
-            int half = t / 2;
+            var blocks = new List<RectangleF>();
+            float t = (float)s.Thickness, d = (float)s.Gap, n = (float)s.Length;
+            // Keep old integer strokes aligned; fractional dimensions are resolved by alpha coverage in Rasterize.
+            float half = t == (int)t ? (int)t / 2 : t / 2;
             if (shape == 0 || shape == 4)
             {
-                blocks.Add(new Rectangle(cx - half, cy - d - n, t, n));
-                if (shape != 4) blocks.Add(new Rectangle(cx - half, cy + d, t, n));
-                blocks.Add(new Rectangle(cx - d - n, cy - half, n, t));
-                blocks.Add(new Rectangle(cx + d, cy - half, n, t));
+                blocks.Add(new RectangleF(cx - half, cy - d - n, t, n));
+                if (shape != 4) blocks.Add(new RectangleF(cx - half, cy + d, t, n));
+                blocks.Add(new RectangleF(cx - d - n, cy - half, n, t));
+                blocks.Add(new RectangleF(cx + d, cy - half, n, t));
             }
             if (shape == 1 || shape == 3 || s.CenterDot)
             {
-                int size = shape == 1 ? Math.Max(2, s.Thickness + 2) : s.Thickness;
-                blocks.Add(new Rectangle(cx - size / 2, cy - size / 2, size, size));
+                float size = shape == 1 ? Math.Max(2, t + 2) : t;
+                float offset = size == (int)size ? (int)size / 2 : size / 2;
+                blocks.Add(new RectangleF(cx - offset, cy - offset, size, size));
             }
             using (var color = new SolidBrush(s.ForegroundColor))
             {
                 if (s.Outline)
-                    foreach (Rectangle r in blocks) { Rectangle edge = r; edge.Inflate(1, 1); g.FillRectangle(Brushes.Black, edge); }
-                foreach (Rectangle r in blocks) g.FillRectangle(color, r);
+                    foreach (RectangleF r in blocks) { RectangleF edge = r; edge.Inflate(1, 1); g.FillRectangle(Brushes.Black, edge); }
+                foreach (RectangleF r in blocks) g.FillRectangle(color, r);
                 if (shape == 2 || shape == 3)
                 {
-                    int radius = s.Length;
-                    var circle = new Rectangle(cx - radius, cy - radius, radius * 2, radius * 2);
+                    float radius = n;
+                    var circle = new RectangleF(cx - radius, cy - radius, radius * 2, radius * 2);
                     if (s.Outline) using (var edge = new Pen(Color.Black, t + 2)) g.DrawEllipse(edge, circle);
                     using (var pen = new Pen(color, t)) g.DrawEllipse(pen, circle);
                 }
             }
+        }
+
+        public static Bitmap Rasterize(CrosshairStyle style, int width, int height)
+        {
+            var result = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            bool fractional = style.Length % 1 != 0 || style.Gap % 1 != 0 || style.Thickness % 1 != 0;
+            using (Graphics target = Graphics.FromImage(result))
+            {
+                if (!fractional) Draw(target, style, width / 2, height / 2);
+                else
+                {
+                    // Supersampling preserves subpixel coverage without a color-key fringe on the desktop.
+                    using (var large = new Bitmap(width * 8, height * 8, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+                    {
+                        using (Graphics g = Graphics.FromImage(large)) { g.ScaleTransform(8, 8); Draw(g, style, width / 2, height / 2); }
+                        target.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        target.PixelOffsetMode = PixelOffsetMode.Half;
+                        target.DrawImage(large, new Rectangle(0, 0, width, height));
+                    }
+                }
+            }
+            return result;
         }
     }
 
@@ -192,6 +254,7 @@ namespace ScreenCrosshair
         readonly System.Windows.Forms.Timer timer;
         readonly System.Windows.Forms.Timer saveTimer;
         bool dirty;
+        CrosshairStyle renderedStyle;
         public readonly RecognitionController Recognition;
         SettingsWindow settingsWindow;
 
@@ -205,14 +268,11 @@ namespace ScreenCrosshair
             StartPosition = FormStartPosition.Manual;
             ClientSize = new Size(128, 128);
             Text = WindowTitle;
-            BackColor = Color.FromArgb(1, 2, 3);
-            TransparencyKey = BackColor;
             TopMost = true;
             DoubleBuffered = true;
-            ApplyTransparencyColor();
-            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            Icon = AppArtwork.CreateIcon(32, true);
 
-            var menu = new ContextMenuStrip();
+            var menu = new ContextMenuStrip { BackColor = Theme.Card, ForeColor = Theme.Text, Renderer = new DarkMenuRenderer(), ShowImageMargin = false, Font = new Font("Microsoft YaHei UI", 9F) };
             toggle = new ToolStripMenuItem("隐藏准星    Ctrl+Alt+F8", null, delegate { Toggle(); });
             menu.Items.Add(toggle);
             menu.Items.Add("调整准星…    Ctrl+Alt+F9", null, delegate { OpenSettings(); });
@@ -228,7 +288,7 @@ namespace ScreenCrosshair
             saveTimer = new System.Windows.Forms.Timer { Interval = 350 };
             saveTimer.Tick += delegate { SaveNow(); };
             Recognition = new RecognitionController(Config);
-            Recognition.Updated += delegate { Invalidate(); };
+            Recognition.Updated += delegate { RefreshSurface(); };
             RefreshPosition();
         }
 
@@ -248,6 +308,7 @@ namespace ScreenCrosshair
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            renderedStyle = null;
             HotkeyErrors.Clear();
             Keys[] keys = { Keys.F8, Keys.F9, Keys.F10, Keys.F11 };
             for (int i = 0; i < keys.Length; i++)
@@ -280,6 +341,10 @@ namespace ScreenCrosshair
         {
             if (Visible) Hide(); else { Show(); RefreshPosition(); }
             toggle.Text = Visible ? "隐藏准星    Ctrl+Alt+F8" : "显示准星    Ctrl+Alt+F8";
+            Icon previous = tray.Icon;
+            tray.Icon = AppArtwork.CreateIcon(32, Visible);
+            if (!ReferenceEquals(previous, Icon)) previous.Dispose();
+            tray.Text = Visible ? "屏幕准星 · 已开启 · 双击调整" : "屏幕准星 · 已隐藏 · 双击调整";
         }
 
         public void CycleMonitor()
@@ -294,26 +359,26 @@ namespace ScreenCrosshair
         public void Changed(bool recognitionSettingsChanged = true)
         {
             Config.Validate();
-            ApplyTransparencyColor();
             if (recognitionSettingsChanged) Recognition.Reset();
             RefreshPosition();
-            Invalidate();
+            RefreshSurface();
             if (!persist) return;
             // Slider drags repaint immediately; debounce disk writes until the user pauses.
             dirty = true; saveTimer.Stop(); saveTimer.Start();
         }
 
-        void ApplyTransparencyColor()
+        void RefreshSurface()
         {
-            // Reserve a key unused by all profiles, so a recognition switch cannot make a custom color disappear.
-            Color key = Color.FromArgb(1, 2, 3);
-            for (int i = 1; i <= 4; i++)
-            {
-                key = Color.FromArgb(i, i + 1, i + 2);
-                if (key.ToArgb() != Config.ForegroundColor.ToArgb() && key.ToArgb() != Config.Profile(WeaponKind.Shotgun).ForegroundColor.ToArgb() && key.ToArgb() != Config.Profile(WeaponKind.Sniper).ForegroundColor.ToArgb()) break;
-            }
-            if (BackColor != key) { BackColor = key; TransparencyKey = key; }
+            if (!IsHandleCreated || !Visible) { renderedStyle = null; return; }
+            CrosshairStyle style = Recognition == null ? Config : Recognition.DisplayStyle;
+            // Status updates arrive on every OCR sample; only changed geometry/color needs a new bitmap upload.
+            if (style.SameAppearance(renderedStyle)) return;
+            using (Bitmap bitmap = Renderer.Rasterize(style, Width, Height))
+                LayeredSurface.Present(Handle, Location, bitmap);
+            renderedStyle = style.Copy(style.Shape);
         }
+        protected override void OnShown(EventArgs e) { base.OnShown(e); RefreshSurface(); }
+        protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); RefreshSurface(); }
 
         void SaveNow()
         {
@@ -334,7 +399,7 @@ namespace ScreenCrosshair
             settingsWindow.Activate();
         }
 
-        protected override void OnPaint(PaintEventArgs e) { Renderer.Draw(e.Graphics, Recognition == null ? Config : Recognition.DisplayStyle, ClientSize.Width / 2, ClientSize.Height / 2); }
+        protected override void OnPaint(PaintEventArgs e) { RefreshSurface(); }
 
         protected override void WndProc(ref Message m)
         {
@@ -355,7 +420,9 @@ namespace ScreenCrosshair
             Recognition.Dispose(); SaveNow(); saveTimer.Dispose();
             if (settingsWindow != null) settingsWindow.Dispose();
             tray.Visible = false;
+            if (!ReferenceEquals(tray.Icon, Icon)) tray.Icon.Dispose();
             tray.ContextMenuStrip.Dispose(); tray.Dispose();
+            Icon.Dispose();
             base.OnFormClosed(e);
         }
     }
@@ -372,7 +439,7 @@ namespace ScreenCrosshair
                 for (int x = Width / 2 % 24; x < Width; x += 24) e.Graphics.DrawLine(grid, x, 0, x, Height);
                 for (int y = Height / 2 % 24; y < Height; y += 24) e.Graphics.DrawLine(grid, 0, y, Width, y);
             }
-            Renderer.Draw(e.Graphics, Config, Width / 2, Height / 2);
+            using (Bitmap image = Renderer.Rasterize(Config, 128, 128)) e.Graphics.DrawImageUnscaled(image, Width / 2 - 64, Height / 2 - 64);
         }
     }
 

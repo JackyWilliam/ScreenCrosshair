@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -163,7 +164,7 @@ public static class RecognitionTests
         using (var overlay = new Overlay(legacy, false))
         {
             var tracker = (StableWeaponTracker)typeof(RecognitionController).GetField("tracker", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(overlay.Recognition);
-            Assert(new[] { legacy.ForegroundColor, legacy.Shotgun.ForegroundColor, legacy.Sniper.ForegroundColor }.All(c => c.ToArgb() != overlay.TransparencyKey.ToArgb()), "Transparent key avoids all three profile colors");
+            Assert(new[] { legacy.ForegroundColor, legacy.Shotgun.ForegroundColor, legacy.Sniper.ForegroundColor }.All(c => c.ToArgb() != overlay.TransparencyKey.ToArgb()), "Per-pixel alpha leaves all RGB colors available");
             tracker.Observe(Find("MASTIFF")); tracker.Observe(Find("MASTIFF"));
             Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy.Shotgun), "Confirmed shotgun selects complete shotgun profile");
             legacy.Shotgun.Shape = 2; overlay.Changed(false);
@@ -182,36 +183,115 @@ public static class RecognitionTests
         }
     }
 
+    static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control child in parent.Controls) { yield return child; foreach (Control nested in Descendants(child)) yield return nested; }
+    }
+
+    sealed class TestSettingsWindow : SettingsWindow
+    {
+        public TestSettingsWindow(Overlay owner) : base(owner) { ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override void OnShown(EventArgs e) { }
+    }
+
     static void UiChecks()
     {
         var config = new Settings { ColorHex = "#010203" };
         using (var overlay = new Overlay(config, false))
-        using (var settings = new SettingsWindow(overlay))
+        using (var settings = new TestSettingsWindow(overlay))
         {
             overlay.Show(); settings.Show(); Application.DoEvents();
-            Assert(overlay.TransparencyKey.ToArgb() != config.ForegroundColor.ToArgb(), "Custom transparency-key color remains visible");
-            SliderRow[] sliders = settings.Controls.OfType<SliderRow>().ToArray();
+            Assert(overlay.TransparencyKey.ToArgb() != config.ForegroundColor.ToArgb(), "Custom RGB remains independent of transparency");
+            SliderRow[] sliders = Descendants(settings).OfType<SliderRow>().ToArray();
             Assert(sliders.Length == 3, "Three appearance sliders available");
+            TextBox pixels = sliders[2].Controls.OfType<TextBox>().Single();
+            pixels.Text = "1.25";
+            Assert(config.Thickness == 1.25 && sliders[2].Value == 1.25, "Typed fractional pixels update actual style and slider");
+            pixels.Text = ""; pixels.Text = "abc"; pixels.Text = "999";
+            Assert(config.Thickness == 1.25, "Incomplete, nonnumeric and out-of-range input preserve last valid size");
+            sliders[2].Value = 2.75;
+            Assert(pixels.Text == "2.75" && config.Thickness == 2.75, "Slider synchronizes numeric input without integer rounding");
             sliders[0].Value = 19; sliders[1].Value = 7; sliders[2].Value = 4;
             Assert(config.Length == 19 && config.Gap == 7 && config.Thickness == 4, "Sliders update live settings");
-            TextBox hex = settings.Controls.OfType<TextBox>().Single(); hex.Text = "#AA33CC";
+            TextBox hex = Descendants(settings).OfType<TextBox>().Single(c => c.Name == "ColorHex"); hex.Text = "#AA33CC";
             Assert(config.ForegroundColor.ToArgb() == Color.FromArgb(170, 51, 204).ToArgb(), "HEX input updates live color");
             hex.Text = "#AA33CZ"; Assert(config.ColorHex == "#AA33CC", "Invalid HEX preserves last valid color");
-            ComboBox profile = settings.Controls.OfType<ComboBox>().Single(c => c.Name == "EditingProfile");
+            ComboBox profile = Descendants(settings).OfType<ComboBox>().Single(c => c.Name == "EditingProfile");
             profile.SelectedIndex = 1; sliders[0].Value = 24; sliders[2].Value = 6; hex.Text = "#FF8800";
             Assert(config.Shotgun.Length == 24 && config.Shotgun.Thickness == 6 && config.Shotgun.ColorHex == "#FF8800" && config.Length == 19 && config.ColorHex == "#AA33CC", "UI edits shotgun profile without changing ordinary");
-            Assert(ReferenceEquals(settings.Controls.OfType<Preview>().Single().Config, config.Shotgun), "Preview follows selected profile");
+            Assert(ReferenceEquals(Descendants(settings).OfType<Preview>().Single().Config, config.Shotgun), "Preview follows selected profile");
             Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, config), "Selecting editor profile alone does not switch active overlay");
             profile.SelectedIndex = 2; sliders[1].Value = 11; hex.Text = "#00BBFF";
             Assert(config.Sniper.Gap == 11 && config.Sniper.ColorHex == "#00BBFF" && config.Shotgun.ColorHex == "#FF8800", "UI sniper profile is independent of shotgun");
             profile.SelectedIndex = 0;
             Assert(sliders[0].Value == 19 && sliders[1].Value == 7 && sliders[2].Value == 4 && hex.Text == "#AA33CC", "Switching editor back restores ordinary control values");
             profile.SelectedIndex = 1;
-            settings.Controls.OfType<Button>().Single(b => b.Text == "重置当前").PerformClick();
+            Descendants(settings).OfType<Button>().Single(b => b.Text == "重置当前").PerformClick();
             Assert(config.Shotgun.Length == 8 && config.Shotgun.Shape == 3 && config.Length == 19 && config.Sniper.Gap == 11, "UI reset is limited to selected profile");
+            CustomPreset savedPreset = config.SavePreset("我的细准星", new CrosshairStyle { Length = 12.75, Gap = 3.25, Thickness = 1.25, ColorHex = "#77DDCC" });
+            ComboBox custom = Descendants(settings).OfType<ComboBox>().Single(c => c.Name == "CustomPresets");
+            custom.Items.Add(savedPreset); custom.SelectedItem = savedPreset; settings.ApplySelectedPreset();
+            Assert(config.Shotgun.Thickness == 1.25 && config.Shotgun.Length == 12.75 && config.Length == 19, "Applying named preset affects only editor profile");
+            sliders[2].Value = 2.5;
+            Assert(savedPreset.Style.Thickness == 1.25, "Live edits after applying leave saved preset unchanged");
+            using (var dialog = new PresetDialog(config, savedPreset))
+            {
+                Assert(Descendants(dialog).OfType<Button>().Any(b => b.Text == "更新"), "Existing preset clearly offers update");
+                Descendants(dialog).OfType<TextBox>().Single().Text = "";
+                Assert(Descendants(dialog).OfType<Button>().Single(b => b.Text == "保存").Enabled == false, "Empty preset name cannot be saved");
+            }
             config.AutoDetect = false; overlay.Changed(); Assert(overlay.Recognition.Status == "自动识别已关闭", "Disabled recognition reports stopped");
             settings.Close(); overlay.Close();
         }
+    }
+
+    static void DecimalPresetChecks()
+    {
+        var settings = new Settings { Length = 12.75, Gap = 3.25, Thickness = 1.25, ColorHex = "#ABCDEF", Outline = false };
+        settings.Validate();
+        CustomPreset preset = settings.SavePreset(" 自定义 A ", settings);
+        settings.Thickness = 3;
+        Assert(preset.Name == "自定义 A" && preset.Style.Thickness == 1.25, "Preset captures a named independent snapshot");
+        settings.SavePreset("自定义 a", settings);
+        Assert(settings.CustomPresets.Count == 1 && preset.Style.Thickness == 3, "Saving an existing name updates without duplicate entries");
+        bool rejected = false; try { settings.SavePreset(" ", settings); } catch (ArgumentException) { rejected = true; }
+        Assert(rejected, "Blank preset names are rejected at persistence boundary");
+        settings.Thickness = 1.25; settings.SavePreset("第二套", settings);
+        var serializer = new XmlSerializer(typeof(Settings));
+        using (var output = new StringWriter())
+        {
+            serializer.Serialize(output, settings);
+            using (var input = new StringReader(output.ToString()))
+            {
+                var restored = (Settings)serializer.Deserialize(input); restored.Validate();
+                Assert(restored.Length == 12.75 && restored.Gap == 3.25 && restored.Thickness == 1.25 && restored.CustomPresets.Count == 2 && restored.CustomPresets[1].Style.Thickness == 1.25, "Fractional profiles and named presets survive reload");
+                restored.CustomPresets.RemoveAt(0);
+                using (var deleted = new StringWriter())
+                {
+                    serializer.Serialize(deleted, restored);
+                    using (var input2 = new StringReader(deleted.ToString()))
+                    {
+                        var saved = (Settings)serializer.Deserialize(input2);
+                        Assert(saved.CustomPresets.Count == 1 && saved.CustomPresets[0].Name == "第二套" && saved.Thickness == 1.25, "Preset deletion survives reload and preserves active appearance");
+                    }
+                }
+            }
+        }
+        using (Bitmap fractional = Renderer.Rasterize(settings, 128, 128))
+        {
+            bool partial = false;
+            for (int y = 0; y < fractional.Height; y++) for (int x = 0; x < fractional.Width; x++)
+            { int alpha = fractional.GetPixel(x, y).A; if (alpha > 0 && alpha < 255) partial = true; }
+            Assert(partial && fractional.GetPixel(0, 0).A == 0, "Fractional geometry produces alpha coverage and transparent background");
+        }
+        settings.Length = 8; settings.Gap = 4; settings.Thickness = 2;
+        using (Bitmap integral = Renderer.Rasterize(settings, 128, 128))
+        {
+            Assert(integral.GetPixel(64, 56).ToArgb() == settings.ForegroundColor.ToArgb() && integral.GetPixel(64, 64).A == 0, "Integer crosshair retains crisp color and transparent gap");
+        }
+        settings.Length = double.NaN; settings.Thickness = double.PositiveInfinity; settings.Gap = -20; settings.Validate();
+        Assert(settings.Length == 8 && settings.Thickness == 2 && settings.Gap == 0, "Nonfinite and invalid dimensions safely normalize");
     }
 
     static async Task WaitFor(Func<bool> condition, string description, int timeout = 7000)
@@ -252,15 +332,15 @@ public static class RecognitionTests
             config.AutoDetect = false; overlay.Changed();
             await Task.Delay(650); Assert(overlay.Recognition.Status == "自动识别已关闭", "Disable stops recognition");
             config.ColorHex = "#010203"; overlay.Changed();
-            Assert(overlay.TransparencyKey.ToArgb() != config.ForegroundColor.ToArgb(), "Custom transparency-key color remains visible");
-            using (var settings = new SettingsWindow(overlay))
+            Assert(overlay.TransparencyKey.ToArgb() != config.ForegroundColor.ToArgb(), "Custom RGB remains independent of transparency");
+            using (var settings = new TestSettingsWindow(overlay))
             {
                 settings.Show(); await Task.Delay(150);
-                SliderRow[] sliders = settings.Controls.OfType<SliderRow>().ToArray();
+                SliderRow[] sliders = Descendants(settings).OfType<SliderRow>().ToArray();
                 Assert(sliders.Length == 3, "All three numeric appearance controls replaced by sliders");
                 sliders[0].Value = 19; sliders[1].Value = 7; sliders[2].Value = 4;
                 Assert(config.Length == 19 && config.Gap == 7 && config.Thickness == 4, "Sliders update live settings");
-                TextBox hex = settings.Controls.OfType<TextBox>().Single(); hex.Text = "#AA33CC";
+                TextBox hex = Descendants(settings).OfType<TextBox>().Single(c => c.Name == "ColorHex"); hex.Text = "#AA33CC";
                 Assert(config.ForegroundColor.ToArgb() == Color.FromArgb(170, 51, 204).ToArgb(), "HEX input updates live color");
                 hex.Text = "#AA33CZ"; Assert(config.ColorHex == "#AA33CC", "Partial invalid HEX preserves last valid color");
                 settings.Close();
@@ -274,7 +354,7 @@ public static class RecognitionTests
     public static int Main(string[] args)
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-        try { UnitChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+        try { UnitChecks(); DecimalPresetChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
         if (!args.Contains("--interactive")) { Console.WriteLine("SUCCESS: " + checks + " assertions; interactive screen-capture test not requested."); return 0; }
         // The executable is named r5apex solely so the production foreground guard can be tested end to end.
         // All captured pixels belong to this synthetic window; no game process is modified or inspected.
