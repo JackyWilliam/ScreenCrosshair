@@ -22,7 +22,7 @@ namespace ScreenCrosshair
 
     public static class WeaponCatalog
     {
-        // Explicit names avoid mistaking generic "sniper ammo" or a second weapon slot for the active gun.
+        // Explicit names avoid mistaking generic "sniper ammo" for a gun; activation is resolved from label brightness.
         // Categories follow EA's weapon guide; marksman weapons deliberately keep the ordinary style.
         public static readonly Weapon[] All = {
             new Weapon("和平捍卫者", WeaponKind.Shotgun, "PEACEKEEPER", "和平捍卫者", "和平捍衛者", "和平使者"),
@@ -156,7 +156,7 @@ namespace ScreenCrosshair
         {
             generation++; failed = false; tracker.Reset(); lastWindow = IntPtr.Zero;
             timer.Interval = config.ScanInterval;
-            SetStatus(!config.AutoDetect ? "自动识别已关闭" : !config.CaptureRegionSet ? "请先框选正在使用的武器名称" : "等待 Apex 位于前台");
+            SetStatus(!config.AutoDetect ? "自动识别已关闭" : !config.CaptureRegionSet ? "请重新框选两个枪名，按文字高亮判断激活武器" : "等待 Apex 位于前台");
         }
         void SetStatus(string message)
         {
@@ -177,14 +177,14 @@ namespace ScreenCrosshair
             if (busy) return;
             Rectangle region = ApexWindow.CaptureBounds(config, bounds);
             if (region.Width < 12 || region.Height < 6 || region.Width > 1600 || region.Height > 400)
-            { SetStatus("识别区域不合适，请重新框选一行武器名称"); return; }
+            { SetStatus("识别区域不合适，请把两个枪名一起框入"); return; }
             int revision = generation;
             string language = config.OcrLanguage;
             busy = true;
             try
             {
                 var watch = Stopwatch.StartNew();
-                string text = await Task.Run(delegate
+                ActiveWeaponReading reading = await Task.Run(delegate
                 {
                     // Check both sides of capture: an Alt-Tab mid-capture must never produce a classification.
                     if (Native.GetForegroundWindow() != window) return null;
@@ -193,12 +193,12 @@ namespace ScreenCrosshair
                         using (Graphics g = Graphics.FromImage(crop)) g.CopyFromScreen(region.Location, Point.Empty, region.Size, CopyPixelOperation.SourceCopy);
                         if (Native.GetForegroundWindow() != window) return null;
                         // A bounded crop and bounded upscale keep work independent of full-screen resolution.
-                        double scale = Math.Min(3.0, Math.Min(96.0 / crop.Height, 1000.0 / crop.Width));
+                        double scale = Math.Min(3.0, Math.Min(Math.Max(1.0, 96.0 / crop.Height), 1600.0 / crop.Width));
                         using (var enlarged = new Bitmap(Math.Max(1, (int)(crop.Width * scale)), Math.Max(1, (int)(crop.Height * scale)), PixelFormat.Format32bppArgb))
                         {
                             using (Graphics g = Graphics.FromImage(enlarged)) { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(crop, new Rectangle(Point.Empty, enlarged.Size)); }
                             if (ocr == null) ocr = new WindowsOcr();
-                            return ocr.Read(enlarged, language);
+                            return ActiveWeaponDetector.Read(enlarged, ocr.ReadLayout(enlarged, language));
                         }
                     }
                 });
@@ -206,10 +206,10 @@ namespace ScreenCrosshair
                 IntPtr current; Rectangle currentBounds;
                 if (!ApexWindow.Foreground(out current, out currentBounds) || current != window || currentBounds != bounds) { Reset(); return; }
                 LastMilliseconds = watch.Elapsed.TotalMilliseconds;
-                Weapon found = WeaponCatalog.Match(text);
+                Weapon found = reading == null ? null : reading.Active;
                 Weapon confirmed = tracker.Observe(found);
                 string active = confirmed == null ? "普通准星" : confirmed.Name + " · " + (confirmed.Kind == WeaponKind.Shotgun ? "霰弹枪" : confirmed.Kind == WeaponKind.Sniper ? "狙击枪" : "普通准星");
-                SetStatus((found == null ? "未读到唯一枪名；" : "识别中；") + active + " · " + LastMilliseconds.ToString("0") + " ms");
+                SetStatus((reading == null ? "等待画面稳定" : reading.Message) + "；" + active + " · " + LastMilliseconds.ToString("0") + " ms");
             }
             catch (Exception error)
             {
@@ -254,7 +254,7 @@ namespace ScreenCrosshair
         protected override void OnPaint(PaintEventArgs e)
         {
             using (var font = new Font("Microsoft YaHei UI", 18, FontStyle.Bold))
-                e.Graphics.DrawString("只框选当前正在使用的武器名称，避开备用武器、弹药和提示。Esc 取消。", font, Brushes.White, 24, 24);
+                e.Graphics.DrawString("把两把武器的名称一起框入，包含亮的和暗的；避开弹药与拾取提示。Esc 取消。", font, Brushes.White, 24, 24);
             using (var pen = new Pen(Color.Lime, 3)) e.Graphics.DrawRectangle(pen, Rectangle.FromLTRB(Math.Min(start.X, end.X), Math.Min(start.Y, end.Y), Math.Max(start.X, end.X), Math.Max(start.Y, end.Y)));
         }
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Reflection;
@@ -8,6 +9,21 @@ using System.Threading.Tasks;
 
 namespace ScreenCrosshair
 {
+    public sealed class OcrWordBox
+    {
+        public string Text;
+        public RectangleF Bounds;
+    }
+    public sealed class OcrLineBox
+    {
+        public readonly List<OcrWordBox> Words = new List<OcrWordBox>();
+    }
+    public sealed class OcrReading
+    {
+        public string Text;
+        public readonly List<OcrLineBox> Lines = new List<OcrLineBox>();
+    }
+
     public sealed class WindowsOcr
     {
         readonly Type engineType, bitmapType, resultType;
@@ -35,6 +51,9 @@ namespace ScreenCrosshair
         }
 
         public string Read(Bitmap input, string language)
+        { return ReadLayout(input, language).Text; }
+
+        public OcrReading ReadLayout(Bitmap input, string language)
         {
             if (engine == null || engineLanguage != language)
             {
@@ -62,8 +81,8 @@ namespace ScreenCrosshair
             try
             {
                 bitmapType.GetMethod("CopyFromBuffer").Invoke(bitmap, new object[] { asBuffer.Invoke(null, new object[] { pixels }) });
-                string text = Recognize(bitmap);
-                if (!string.IsNullOrWhiteSpace(text)) return text;
+                OcrReading text = Recognize(bitmap);
+                if (!string.IsNullOrWhiteSpace(text.Text)) return text;
                 // Sparse bright HUD glyphs on a tinted background can be missed; retry once at high contrast.
                 // Keep the original pass first so colored or antialiased names are not discarded by thresholding.
                 for (int i = 0; i < pixels.Length; i += 4)
@@ -78,13 +97,32 @@ namespace ScreenCrosshair
             finally { ((IDisposable)bitmap).Dispose(); }
         }
 
-        string Recognize(object bitmap)
+        static float Coordinate(object rectangle, string name)
+        {
+            Type type = rectangle.GetType();
+            PropertyInfo property = type.GetProperty(name);
+            return Convert.ToSingle(property != null ? property.GetValue(rectangle) : type.GetField(name).GetValue(rectangle));
+        }
+
+        OcrReading Recognize(object bitmap)
         {
             object operation = engineType.GetMethod("RecognizeAsync").Invoke(engine, new object[] { bitmap });
             Task task = (Task)asTask.Invoke(null, new object[] { operation });
             task.GetAwaiter().GetResult();
             object result = task.GetType().GetProperty("Result").GetValue(task);
-            return (string)resultType.GetProperty("Text").GetValue(result);
+            var reading = new OcrReading { Text = (string)resultType.GetProperty("Text").GetValue(result) };
+            // Preserve word positions: flattening both persistent gun labels loses the active-slot cue.
+            foreach (object line in (IEnumerable)resultType.GetProperty("Lines").GetValue(result))
+            {
+                var parsed = new OcrLineBox();
+                foreach (object word in (IEnumerable)line.GetType().GetProperty("Words").GetValue(line))
+                {
+                    object bounds = word.GetType().GetProperty("BoundingRect").GetValue(word);
+                    parsed.Words.Add(new OcrWordBox { Text = (string)word.GetType().GetProperty("Text").GetValue(word), Bounds = new RectangleF(Coordinate(bounds, "X"), Coordinate(bounds, "Y"), Coordinate(bounds, "Width"), Coordinate(bounds, "Height")) });
+                }
+                reading.Lines.Add(parsed);
+            }
+            return reading;
         }
     }
 }

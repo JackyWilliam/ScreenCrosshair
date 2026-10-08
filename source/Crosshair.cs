@@ -9,7 +9,7 @@ using System.Windows.Forms;
 using System.Xml.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("屏幕准星")]
-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.1.0")]
 
 namespace ScreenCrosshair
 {
@@ -39,6 +39,7 @@ namespace ScreenCrosshair
         public string OcrLanguage = "zh-Hans-CN";
         public int ScanInterval = 1000;
         public bool CaptureRegionSet = false;
+        public int CaptureLayoutVersion = 0;
         public double CaptureX, CaptureY, CaptureWidth, CaptureHeight;
 
         [XmlIgnore] public Color ForegroundColor
@@ -72,6 +73,8 @@ namespace ScreenCrosshair
             if (OcrLanguage != "en-US" && OcrLanguage != "zh-Hans-CN") OcrLanguage = "zh-Hans-CN";
             if (ScanInterval != 500 && ScanInterval != 1000 && ScanInterval != 2000) ScanInterval = 1000;
             if (!(CaptureX >= 0 && CaptureY >= 0 && CaptureWidth > 0 && CaptureHeight > 0 && CaptureX + CaptureWidth <= 1.001 && CaptureY + CaptureHeight <= 1.001)) CaptureRegionSet = false;
+            // v1.1.0 asked users to crop a single slot, which cannot follow a switch to the other slot.
+            if (CaptureLayoutVersion < 2) CaptureRegionSet = false;
         }
 
         public static Settings Load(out string warning)

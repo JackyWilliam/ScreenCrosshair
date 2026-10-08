@@ -61,7 +61,7 @@ namespace ScreenCrosshair
 
             var autoPanel = new Panel { Bounds = new Rectangle(24, 407, 672, 190), BackColor = Color.FromArgb(234, 239, 247) }; Controls.Add(autoPanel);
             automatic.Text = "Apex 自动识别武器"; automatic.SetBounds(14, 10, 230, 28); autoPanel.Controls.Add(automatic);
-            chooseRegion.Text = "框选枪名区域…"; chooseRegion.SetBounds(476, 9, 180, 31); autoPanel.Controls.Add(chooseRegion);
+            chooseRegion.Text = "框选两个枪名…"; chooseRegion.SetBounds(476, 9, 180, 31); autoPanel.Controls.Add(chooseRegion);
             autoPanel.Controls.Add(new Label { Text = "游戏语言", Bounds = new Rectangle(16, 52, 77, 25) });
             Combo(language, new Rectangle(95, 48, 180, 30), autoPanel); language.Items.AddRange(new object[] { "简体中文", "English" });
             autoPanel.Controls.Add(new Label { Text = "检测间隔", Bounds = new Rectangle(316, 52, 82, 25) });
@@ -140,7 +140,7 @@ namespace ScreenCrosshair
             foreach (Screen screen in screens) monitor.Items.Add(screen.DeviceName + (screen.Primary ? "（主屏）" : "") + " " + screen.Bounds.Width + "×" + screen.Bounds.Height);
             monitor.SelectedIndex = Array.FindIndex(screens, delegate(Screen screen) { return screen.DeviceName == overlay.SelectedScreen().DeviceName; });
             status.Text = overlay.HotkeyErrors.Count == 0 ? "Ctrl+Alt+F8 显示/隐藏    ·    F9 调整    ·    F10 换屏    ·    F11 退出" : "快捷键被占用：" + string.Join("、", overlay.HotkeyErrors.ToArray()) + "；请使用托盘菜单。";
-            regionStatus.Text = s.CaptureRegionSet ? "已设置枪名区域 · 仅 Apex 在前台时读取 · 图片不保存、不上传" : "首次使用请在训练场框选当前武器名称，仅选一行，避开备用武器。";
+            regionStatus.Text = s.CaptureRegionSet ? "比较两个枪名的文字高亮 · 仅 Apex 前台读取 · 图片不保存、不上传" : "请重新框选两个枪名（亮的和暗的都包含），只让高亮武器决定准星。";
             recognitionStatus.Text = overlay.Recognition.Status;
             loading = false; EnableFields(); preview.Invalidate();
         }
@@ -162,7 +162,7 @@ namespace ScreenCrosshair
             if (choosing) return; choosing = true;
             bool priorAuto = overlay.Config.AutoDetect;
             overlay.Config.AutoDetect = false; overlay.Recognition.Reset();
-            Hide(); overlay.Notify("框选当前枪名", "请在 20 秒内切回 Apex 训练场，拖动框选当前武器名称。Esc 取消。");
+            Hide(); overlay.Notify("框选两个枪名", "请在 20 秒内切回 Apex，把亮的和暗的两个枪名一起框入。Esc 取消。");
             try
             {
                 DateTime end = DateTime.UtcNow.AddSeconds(20);
@@ -177,7 +177,7 @@ namespace ScreenCrosshair
                             Rectangle r = picker.Selection; Settings s = overlay.Config;
                             s.CaptureX = (double)r.X / bounds.Width; s.CaptureY = (double)r.Y / bounds.Height;
                             s.CaptureWidth = (double)r.Width / bounds.Width; s.CaptureHeight = (double)r.Height / bounds.Height;
-                            s.CaptureRegionSet = true; priorAuto = true;
+                            s.CaptureRegionSet = true; s.CaptureLayoutVersion = 2; priorAuto = true;
                         }
                     return;
                 }
