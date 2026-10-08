@@ -28,8 +28,11 @@ namespace ScreenCrosshair
 
         public SettingsWindow(Overlay owner)
         {
+            // Assemble and populate the editor before doing the final parent/scroll layout.
+            SuspendLayout(); Body.SuspendLayout();
             overlay = owner; Text = "屏幕准星"; Icon = owner.Icon; ClientSize = new Size(900, 892);
             var canvas = new Panel { Size = new Size(876, 838), BackColor = Theme.Background }; Body.Controls.Add(canvas);
+            canvas.SuspendLayout();
             var heading = Theme.Label("准星设置", new Rectangle(26, 15, 540, 38));
             heading.Font = new Font(Font.FontFamily, 20F, FontStyle.Bold); canvas.Controls.Add(heading);
             canvas.Controls.Add(Theme.Label("三套独立配置  /  即时生效  /  自动保存", new Rectangle(28, 58, 600, 26), true));
@@ -146,6 +149,7 @@ namespace ScreenCrosshair
             statusTimer = new System.Windows.Forms.Timer { Interval = 350 };
             statusTimer.Tick += delegate { recognitionStatus.Text = overlay.Recognition.Status; };
             statusTimer.Start(); Reload();
+            canvas.ResumeLayout(false); Body.ResumeLayout(true); ResumeLayout(true);
         }
         static Panel Card(Control parent, Rectangle bounds)
         {

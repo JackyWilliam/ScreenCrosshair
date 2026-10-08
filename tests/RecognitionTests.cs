@@ -302,7 +302,8 @@ public static class RecognitionTests
     {
         public TestSettingsWindow(Overlay owner) : base(owner) { ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }
         protected override bool ShowWithoutActivation { get { return true; } }
-        protected override void OnShown(EventArgs e) { }
+        // Keep this test editor offscreen instead of applying the production work-area positioning.
+        protected override void OnLoad(EventArgs e) { }
     }
 
     static void UiChecks()
