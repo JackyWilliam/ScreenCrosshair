@@ -61,8 +61,8 @@ namespace ScreenCrosshair
             {
                 if (Enabled) { base.OnPaint(e); return; }
                 // Label's default disabled rendering derives a near-black color from our dark background.
-                // Preserve caption colors; the track and numeric input already show that editing is unavailable.
-                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
+                // Keep the control disabled, but use the same readable muted color as the other dark controls.
+                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Theme.Muted,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             }
         }
