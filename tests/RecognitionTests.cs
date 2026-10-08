@@ -108,7 +108,7 @@ public static class RecognitionTests
             g.FillRectangle(Brushes.White, 10, 18, 32, 42); g.FillRectangle(Brushes.White, 490, 18, 32, 42);
             g.DrawString("1", font, Brushes.Black, 9, 17); g.DrawString("2", font, Brushes.Black, 489, 17);
             g.DrawString(left, font, leftBrush, 50, 18); g.DrawString(right, font, rightBrush, 530, 18);
-            return ActiveWeaponDetector.Read(image, reader.ReadLayout(image, language));
+            return HudWeaponReader.Read(image, reader, language);
         }
     }
 
@@ -131,6 +131,39 @@ public static class RecognitionTests
         Assert(DualHud(reader, "哨兵", "莫桑比克", dim, Color.White, "zh-Hans-CN").Active == Find("莫桑比克"), "Chinese dim sniper is ignored");
         var tracker = new StableWeaponTracker(); tracker.Observe(right.Active); tracker.Observe(right.Active);
         Assert(tracker.Observe(left.Active) == right.Active && tracker.Observe(left.Active) == left.Active, "Highlight switching still requires two consistent frames");
+    }
+
+    static void NumericHudChecks()
+    {
+        var reader = new WindowsOcr(); Color dim = Color.FromArgb(158, 164, 160);
+        Weapon repeater = Find("30-30"), shotgun = Find("莫桑比克");
+        using (var image = new Bitmap(467, 171))
+        using (Graphics g = Graphics.FromImage(image))
+        using (var font = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold))
+        using (var ammoFont = new Font("Segoe UI", 25F, FontStyle.Bold))
+        {
+            for (int state = 0; state < 4; state++)
+            {
+                // A tall HUD selection includes bright ammo and slot keys above much smaller gun names.
+                g.Clear(Color.FromArgb(55, 27, 21));
+                g.DrawString("02", ammoFont, Brushes.White, 310, 20);
+                g.FillRectangle(Brushes.White, 24, 128, 26, 26); g.FillRectangle(Brushes.White, 239, 128, 26, 26);
+                using (var leftBrush = new SolidBrush(state == 0 || state == 3 ? Color.White : dim))
+                using (var rightBrush = new SolidBrush(state == 1 || state == 3 ? Color.White : dim))
+                {
+                    g.DrawString("30-30", font, leftBrush, 103, 123);
+                    g.DrawString("莫桑比克", font, rightBrush, 293, 123);
+                }
+                ActiveWeaponReading result = HudWeaponReader.Read(image, reader, "zh-Hans-CN");
+                Console.WriteLine("Numeric HUD " + state + " -> " + result.RawText + " / " + result.Message);
+                Assert(state == 0 ? result.Active == repeater : state == 1 ? result.Active == shotgun : result.Active == null,
+                    "Tall numeric HUD: active left/right, both dim, and equal brightness state " + state);
+            }
+            g.Clear(Color.Black);
+            Assert(HudWeaponReader.Read(image, reader, "zh-Hans-CN").Active == null, "Contrast retry cannot activate a blank HUD");
+        }
+        Assert(Find("50-30") == null && Find("3 囗 囗 0 0") == null && Find("30") == null,
+            "Numeric recovery does not turn uncertain OCR fragments into a weapon alias");
     }
 
     static void ProfileChecks()
@@ -539,7 +572,7 @@ public static class RecognitionTests
     public static int Main(string[] args)
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-        try { UnitChecks(); ScopedPresetChecks(); ScopedPresetUiChecks(); CommonParameterChecks(); DecimalPresetChecks(); CustomPartChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+        try { UnitChecks(); ScopedPresetChecks(); ScopedPresetUiChecks(); CommonParameterChecks(); DecimalPresetChecks(); CustomPartChecks(); ImagePipeline(); HighlightChecks(); NumericHudChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
         if (!args.Contains("--interactive")) { Console.WriteLine("SUCCESS: " + checks + " assertions; interactive screen-capture test not requested."); return 0; }
         // The executable is named r5apex solely so the production foreground guard can be tested end to end.
         // All captured pixels belong to this synthetic window; no game process is modified or inspected.

@@ -53,7 +53,7 @@ namespace ScreenCrosshair
         public string Read(Bitmap input, string language)
         { return ReadLayout(input, language).Text; }
 
-        public OcrReading ReadLayout(Bitmap input, string language)
+        public OcrReading ReadLayout(Bitmap input, string language, bool highContrast = false)
         {
             if (engine == null || engineLanguage != language)
             {
@@ -80,11 +80,14 @@ namespace ScreenCrosshair
             object bitmap = Activator.CreateInstance(bitmapType, new object[] { format, input.Width, input.Height, alpha });
             try
             {
-                bitmapType.GetMethod("CopyFromBuffer").Invoke(bitmap, new object[] { asBuffer.Invoke(null, new object[] { pixels }) });
-                OcrReading text = Recognize(bitmap);
-                if (!string.IsNullOrWhiteSpace(text.Text)) return text;
+                if (!highContrast)
+                {
+                    bitmapType.GetMethod("CopyFromBuffer").Invoke(bitmap, new object[] { asBuffer.Invoke(null, new object[] { pixels }) });
+                    OcrReading text = Recognize(bitmap);
+                    if (!string.IsNullOrWhiteSpace(text.Text)) return text;
+                }
                 // Sparse bright HUD glyphs on a tinted background can be missed; retry once at high contrast.
-                // Keep the original pass first so colored or antialiased names are not discarded by thresholding.
+                // The HUD reader also requests this pass when nonempty OCR text contains no active gun name.
                 for (int i = 0; i < pixels.Length; i += 4)
                 {
                     int luminance = (pixels[i] * 29 + pixels[i + 1] * 150 + pixels[i + 2] * 77) >> 8;
