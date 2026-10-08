@@ -113,3 +113,9 @@ v1.3.2 在本机通过 137 项断言，覆盖中英文 OCR、高亮筛选、神�
 可选的 `-Interactive` 测试会显示一个合成武器 HUD，验证屏幕局部捕获。运行时保持测试窗口在前台；若焦点被其他窗口切走，测试会失败。测试构建限制为只能捕获自身窗口，不能捕获正在运行的真实 Apex。
 
 实现参考：[Windows layered windows](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features)、[RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)、[UpdateLayeredWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-updatelayeredwindow)。
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。Copyright (c) 2026 JackyWilliam。
+
+允许使用、修改、分发及商用；分发软件副本或实质性部分时，须保留版权声明和许可声明。软件按原样提供，不提供任何担保。完整条款以 [LICENSE](LICENSE) 为准。
