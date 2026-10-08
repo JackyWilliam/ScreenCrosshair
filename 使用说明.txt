@@ -1,0 +1,28 @@
+﻿屏幕准星
+
+双击 ScreenCrosshair.exe，准星会显示在主屏正中央。
+无需安装或管理员权限。默认绿色十字、黑色描边，背景透明，鼠标点击穿透。
+
+快捷键（所有快捷键都需要同时按住 Ctrl 和 Alt）：
+Ctrl + Alt + F8   显示 / 隐藏
+Ctrl + Alt + F9   打开设置
+Ctrl + Alt + F10  切换显示器
+Ctrl + Alt + F11  完全退出
+
+也可以双击任务栏通知区域的准星图标打开设置，右击可显示、隐藏或退出。
+如果图标收在通知区域的上箭头菜单里，请展开查看。
+再次双击程序会打开已有程序的设置，不会重复叠加准星。
+
+设置包括十字 / 圆点 / 圆环、六种颜色、长度、间隔、粗细、描边和中心点。
+修改即时生效，自动保存到 %LOCALAPPDATA%\ScreenCrosshair\settings.xml。
+关闭设置窗口后准星继续显示；请用退出快捷键或托盘“退出”结束程序。
+没有设置开机启动。
+
+适用于 Windows 10 / 11 桌面、窗口化或无边框窗口。
+独占全屏可能无法显示，遇到这种情况请改用无边框窗口。
+没有针对具体游戏做兼容性验证。
+
+源码位于 source。重建：用 PowerShell 运行 source\build.ps1。
+实现参考：
+https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features
+https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey
