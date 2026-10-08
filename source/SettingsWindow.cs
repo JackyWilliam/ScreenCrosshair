@@ -12,6 +12,9 @@ namespace ScreenCrosshair
         readonly ComboBox profile = new DarkComboBox(), presets = new DarkComboBox(), shape = new DarkComboBox(), color = new DarkComboBox(), monitor = new DarkComboBox(), language = new DarkComboBox(), interval = new DarkComboBox();
         readonly SliderRow length = new SliderRow("长度 / 半径", 2, 32), gap = new SliderRow("中心间隔", 0, 20), thickness = new SliderRow("线条粗细", .1, 8);
         readonly CheckBox outline = new DarkCheckBox(), dot = new DarkCheckBox(), automatic = new DarkCheckBox();
+        readonly CheckBox[] parts = new CheckBox[9];
+        readonly int[] partFlags = { CrosshairParts.Top, CrosshairParts.Bottom, CrosshairParts.Left, CrosshairParts.Right, CrosshairParts.Ring,
+            CrosshairParts.TopLeft, CrosshairParts.TopRight, CrosshairParts.BottomLeft, CrosshairParts.BottomRight };
         readonly TextBox hex = Theme.Input(new Rectangle(481, 84, 104, 28));
         readonly Button pickColor, chooseRegion, deletePreset, applyPreset;
         readonly Label recognitionStatus = new Label(), regionStatus = new Label(), previewTitle = new Label();
@@ -23,8 +26,8 @@ namespace ScreenCrosshair
 
         public SettingsWindow(Overlay owner)
         {
-            overlay = owner; Text = "屏幕准星"; Icon = owner.Icon; ClientSize = new Size(900, 800);
-            var canvas = new Panel { Size = new Size(876, 746), BackColor = Theme.Background }; Body.Controls.Add(canvas);
+            overlay = owner; Text = "屏幕准星"; Icon = owner.Icon; ClientSize = new Size(900, 892);
+            var canvas = new Panel { Size = new Size(876, 838), BackColor = Theme.Background }; Body.Controls.Add(canvas);
             var heading = Theme.Label("准星设置", new Rectangle(26, 15, 540, 38));
             heading.Font = new Font(Font.FontFamily, 20F, FontStyle.Bold); canvas.Controls.Add(heading);
             canvas.Controls.Add(Theme.Label("三套独立配置  /  即时生效  /  自动保存", new Rectangle(28, 58, 600, 26), true));
@@ -41,16 +44,17 @@ namespace ScreenCrosshair
             save.Click += delegate { SavePresetDialog(); };
             deletePreset.Click += delegate { DeletePresetDialog(); };
 
-            var previewCard = Card(canvas, new Rectangle(28, 154, 276, 338));
+            var previewCard = Card(canvas, new Rectangle(28, 154, 276, 430));
             previewCard.Controls.Add(Theme.Label("实时预览", new Rectangle(18, 12, 200, 27)));
-            preview = new Preview(owner.Config) { Bounds = new Rectangle(18, 50, 240, 222) }; previewCard.Controls.Add(preview);
-            previewTitle.Bounds = new Rectangle(18, 283, 240, 23); previewTitle.TextAlign = ContentAlignment.MiddleCenter; previewTitle.ForeColor = Theme.Muted; previewCard.Controls.Add(previewTitle);
-            previewCard.Controls.Add(Theme.Label("按屏幕实际像素显示", new Rectangle(62, 307, 180, 22), true));
+            preview = new Preview(owner.Config) { Bounds = new Rectangle(18, 50, 240, 314) }; previewCard.Controls.Add(preview);
+            previewTitle.Bounds = new Rectangle(18, 375, 240, 23); previewTitle.TextAlign = ContentAlignment.MiddleCenter; previewTitle.ForeColor = Theme.Muted; previewCard.Controls.Add(previewTitle);
+            previewCard.Controls.Add(Theme.Label("按屏幕实际像素显示", new Rectangle(62, 399, 180, 22), true));
 
-            var appearance = Card(canvas, new Rectangle(322, 154, 538, 338));
+            var appearance = Card(canvas, new Rectangle(322, 154, 538, 430));
             appearance.Controls.Add(Theme.Label("准星外观", new Rectangle(20, 12, 200, 27)));
             Theme.Combo(shape, new Rectangle(282, 10, 236, 32), appearance);
-            shape.Items.AddRange(new object[] { "十字", "圆点", "圆环", "圆环＋中心点", "十字（无下方竖线）" });
+            shape.Name = "CrosshairShape";
+            shape.Items.AddRange(new object[] { "十字", "圆点", "圆环", "圆环＋中心点", "十字（无下方竖线）", "自定义组合", "三叉（奔驰）", "X 形" });
             appearance.Controls.Add(Theme.Label("颜色", new Rectangle(20, 57, 48, 28), true));
             Theme.Combo(color, new Rectangle(74, 54, 131, 32), appearance); color.Items.AddRange(Settings.ColorNames); color.Items.Add("自定义");
             hex.Name = "ColorHex"; hex.SetBounds(217, 55, 119, 28); hex.MaxLength = 7; hex.AccessibleName = "自定义颜色 HEX"; appearance.Controls.Add(hex);
@@ -60,7 +64,15 @@ namespace ScreenCrosshair
             outline.Text = "黑色描边"; outline.SetBounds(20, 301, 145, 27); appearance.Controls.Add(outline);
             dot.Text = "中心点"; dot.SetBounds(178, 301, 125, 27); appearance.Controls.Add(dot);
 
-            var autoPanel = Card(canvas, new Rectangle(28, 510, 832, 159));
+            appearance.Controls.Add(Theme.Label("独立部件 · 选择“自定义组合”后可调整", new Rectangle(20, 335, 494, 23), true));
+            string[] partNames = { "上竖线", "下竖线", "左横线", "右横线", "圆环", "左上斜线", "右上斜线", "左下斜线", "右下斜线" };
+            for (int i = 0; i < parts.Length; i++)
+            {
+                var check = new DarkCheckBox { Name = "Part" + partFlags[i], Text = partNames[i], Bounds = new Rectangle(20 + (i < 5 ? i * 100 : (i - 5) * 125), i < 5 ? 361 : 393, i < 5 ? 98 : 120, 26) };
+                parts[i] = check; appearance.Controls.Add(check); check.CheckedChanged += UpdateSettings;
+            }
+
+            var autoPanel = Card(canvas, new Rectangle(28, 602, 832, 159));
             automatic.Text = "Apex 自动识别武器"; automatic.SetBounds(18, 12, 258, 28); autoPanel.Controls.Add(automatic);
             var history = Theme.Button("状态记录", new Rectangle(558, 10, 104, 32)); history.Click += delegate { ShowRecognitionHistory(); }; autoPanel.Controls.Add(history);
             chooseRegion = Theme.Button("框选两个枪名…", new Rectangle(674, 10, 140, 32)); autoPanel.Controls.Add(chooseRegion);
@@ -72,16 +84,28 @@ namespace ScreenCrosshair
             recognitionStatus.SetBounds(18, 90, 796, 28); recognitionStatus.ForeColor = Theme.Accent; autoPanel.Controls.Add(recognitionStatus);
             regionStatus.SetBounds(18, 122, 796, 24); regionStatus.ForeColor = Theme.Muted; regionStatus.Font = new Font(Font.FontFamily, 8.5F); autoPanel.Controls.Add(regionStatus);
 
-            canvas.Controls.Add(Theme.Label("显示器", new Rectangle(28, 689, 66, 28), true));
-            Theme.Combo(monitor, new Rectangle(100, 686, 446, 32), canvas);
-            var reset = Theme.Button("重置当前", new Rectangle(606, 685, 120, 34)); reset.Click += delegate { overlay.Config.ResetProfile(EditingKind); Reload(); overlay.Changed(false); }; canvas.Controls.Add(reset);
-            var done = Theme.Button("完成", new Rectangle(738, 685, 122, 34), true); done.Click += delegate { Close(); }; canvas.Controls.Add(done);
+            canvas.Controls.Add(Theme.Label("显示器", new Rectangle(28, 781, 66, 28), true));
+            Theme.Combo(monitor, new Rectangle(100, 778, 446, 32), canvas);
+            var reset = Theme.Button("重置当前", new Rectangle(606, 777, 120, 34)); reset.Click += delegate { overlay.Config.ResetProfile(EditingKind); Reload(); overlay.Changed(false); }; canvas.Controls.Add(reset);
+            var done = Theme.Button("完成", new Rectangle(738, 777, 122, 34), true); done.Click += delegate { Close(); }; canvas.Controls.Add(done);
             string shortcuts = owner.HotkeyErrors.Count == 0 ? "Ctrl + Alt  ·  F8 显示 / 隐藏    F9 设置    F10 换屏    F11 退出"
                 : "快捷键被占用：" + string.Join("、", owner.HotkeyErrors.ToArray()) + "；请使用托盘菜单。";
-            canvas.Controls.Add(Theme.Label(shortcuts, new Rectangle(28, 722, 825, 23), true));
+            canvas.Controls.Add(Theme.Label(shortcuts, new Rectangle(28, 814, 825, 23), true));
             // The editor selection is independent of whichever profile recognition is displaying in the game.
             profile.SelectedIndexChanged += delegate { if (!loading) Reload(); };
-            shape.SelectedIndexChanged += UpdateSettings; monitor.SelectedIndexChanged += UpdateSettings;
+            shape.SelectedIndexChanged += delegate(object sender, EventArgs args)
+            {
+                if (loading) return;
+                if (shape.SelectedIndex == 5 && EditingStyle.Shape != 5)
+                {
+                    // Start custom editing from the visible template, including the three-spoke angles and forced dot.
+                    CrosshairStyle current = EditingStyle; current.CustomParts = current.PartsForShape(current.Shape);
+                    current.DiagonalAngle = current.AngleForShape(current.Shape);
+                    loading = true; dot.Checked = current.CenterDot || current.Shape == 1 || current.Shape == 3; RefreshParts(current.CustomParts); loading = false;
+                }
+                UpdateSettings(sender, args);
+            };
+            monitor.SelectedIndexChanged += UpdateSettings;
             language.SelectedIndexChanged += UpdateSettings; interval.SelectedIndexChanged += UpdateSettings; automatic.CheckedChanged += UpdateSettings;
             length.ValueChanged += UpdateSettings; gap.ValueChanged += UpdateSettings; thickness.ValueChanged += UpdateSettings;
             outline.CheckedChanged += UpdateSettings; dot.CheckedChanged += UpdateSettings;
@@ -174,11 +198,21 @@ namespace ScreenCrosshair
             loading = false; EnableFields(); preview.Invalidate();
         }
         void EnableFields()
-        { length.Enabled = shape.SelectedIndex != 1; gap.Enabled = shape.SelectedIndex == 0 || shape.SelectedIndex == 4; dot.Enabled = shape.SelectedIndex != 1 && shape.SelectedIndex != 3; }
+        {
+            length.Enabled = shape.SelectedIndex != 1; gap.Enabled = shape.SelectedIndex == 0 || shape.SelectedIndex >= 4;
+            dot.Enabled = shape.SelectedIndex != 1 && shape.SelectedIndex != 3;
+            bool previous = loading; loading = true;
+            RefreshParts(EditingStyle.PartsForShape(EditingStyle.Shape));
+            foreach (CheckBox part in parts) part.Enabled = shape.SelectedIndex == 5;
+            loading = previous;
+        }
+        void RefreshParts(int value)
+        { for (int i = 0; i < parts.Length; i++) parts[i].Checked = (value & partFlags[i]) != 0; }
         void UpdateSettings(object sender, EventArgs args)
         {
             if (loading) return; Settings s = overlay.Config; CrosshairStyle current = EditingStyle;
             current.Shape = shape.SelectedIndex; current.Length = length.Value; current.Gap = gap.Value; current.Thickness = thickness.Value;
+            if (current.Shape == 5) { current.CustomParts = 0; for (int i = 0; i < parts.Length; i++) if (parts[i].Checked) current.CustomParts |= partFlags[i]; }
             current.Outline = outline.Checked; current.CenterDot = dot.Checked;
             s.AutoDetect = automatic.Checked; s.OcrLanguage = language.SelectedIndex == 1 ? "en-US" : "zh-Hans-CN";
             s.ScanInterval = interval.SelectedIndex == 0 ? 500 : interval.SelectedIndex == 2 ? 2000 : 1000;

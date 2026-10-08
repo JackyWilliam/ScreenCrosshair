@@ -235,6 +235,19 @@ public static class RecognitionTests
             Assert(config.Shotgun.Thickness == 1.25 && config.Shotgun.Length == 12.75 && config.Length == 19, "Applying named preset affects only editor profile");
             sliders[2].Value = 2.5;
             Assert(savedPreset.Style.Thickness == 1.25, "Live edits after applying leave saved preset unchanged");
+            ComboBox shape = Descendants(settings).OfType<ComboBox>().Single(c => c.Name == "CrosshairShape");
+            shape.SelectedIndex = 6;
+            int mercedes = CrosshairParts.Top | CrosshairParts.BottomLeft | CrosshairParts.BottomRight;
+            Assert(config.Shotgun.PartsForShape(config.Shotgun.Shape) == mercedes, "Mercedes template selects three spokes");
+            shape.SelectedIndex = 5;
+            Assert(config.Shotgun.CustomParts == mercedes && config.Shotgun.DiagonalAngle == 30, "Custom mode preserves the selected Mercedes template and angle");
+            CheckBox top = Descendants(settings).OfType<CheckBox>().Single(c => c.Name == "Part1");
+            CheckBox ring = Descendants(settings).OfType<CheckBox>().Single(c => c.Name == "Part16");
+            top.Checked = false; ring.Checked = true;
+            Assert(config.Shotgun.CustomParts == (CrosshairParts.BottomLeft | CrosshairParts.BottomRight | CrosshairParts.Ring) && config.Shape == 0, "Independent UI switches remove one spoke and add ring only to selected profile");
+            CustomPreset customParts = config.SavePreset("自定义部件", config.Shotgun);
+            top.Checked = true;
+            Assert((customParts.Style.CustomParts & CrosshairParts.Top) == 0, "Saved custom parts remain isolated from live switches");
             using (var dialog = new PresetDialog(config, savedPreset))
             {
                 Assert(Descendants(dialog).OfType<Button>().Any(b => b.Text == "更新"), "Existing preset clearly offers update");
@@ -292,6 +305,51 @@ public static class RecognitionTests
         }
         settings.Length = double.NaN; settings.Thickness = double.PositiveInfinity; settings.Gap = -20; settings.Validate();
         Assert(settings.Length == 8 && settings.Thickness == 2 && settings.Gap == 0, "Nonfinite and invalid dimensions safely normalize");
+    }
+
+    static void CustomPartChecks()
+    {
+        var style = new Settings { Shape = 5, Length = 12, Gap = 4, Thickness = 2, Outline = false,
+            CustomParts = CrosshairParts.Top | CrosshairParts.Right, ColorHex = "#33DDCC" };
+        using (Bitmap bitmap = Renderer.Rasterize(style, 128, 128))
+        {
+            Assert(bitmap.GetPixel(64, 55).A == 255 && bitmap.GetPixel(73, 64).A == 255, "Enabled top and right elements render");
+            Assert(bitmap.GetPixel(64, 73).A == 0 && bitmap.GetPixel(55, 64).A == 0, "Disabled bottom and left elements stay transparent");
+        }
+        style.CustomParts = 0;
+        using (Bitmap bitmap = Renderer.Rasterize(style, 128, 128))
+        {
+            bool blank = true;
+            for (int y = 0; y < 128; y++) for (int x = 0; x < 128; x++) blank &= bitmap.GetPixel(x, y).A == 0;
+            Assert(blank, "Turning off every element produces a fully transparent crosshair");
+        }
+        style.CenterDot = true;
+        using (Bitmap bitmap = Renderer.Rasterize(style, 128, 128)) Assert(bitmap.GetPixel(64, 64).A == 255, "Center dot works independently of line elements");
+        style.CenterDot = false; style.CustomParts = CrosshairParts.Ring;
+        using (Bitmap bitmap = Renderer.Rasterize(style, 128, 128)) Assert(bitmap.GetPixel(76, 64).A == 255 && bitmap.GetPixel(64, 64).A == 0, "Ring can be enabled on its own");
+        style.Shape = 6; style.Length = 16;
+        using (Bitmap bitmap = Renderer.Rasterize(style, 128, 128))
+        {
+            Assert(bitmap.GetPixel(64, 54).A > 0 && bitmap.GetPixel(74, 70).A > 0 && bitmap.GetPixel(54, 70).A > 0, "Mercedes has upper spoke and symmetric lower spokes");
+            Assert(bitmap.GetPixel(64, 76).A == 0 && bitmap.GetPixel(74, 58).A == 0, "Mercedes excludes vertical bottom and upper diagonals");
+        }
+        style.Shape = 7;
+        using (Bitmap bitmap = Renderer.Rasterize(style, 128, 128))
+            Assert(bitmap.GetPixel(73, 73).A > 0 && bitmap.GetPixel(55, 55).A > 0 && bitmap.GetPixel(73, 55).A > 0 && bitmap.GetPixel(55, 73).A > 0, "X template renders all four diagonals");
+        style.Shape = 5; style.DiagonalAngle = 30; style.CustomParts = CrosshairParts.Top | CrosshairParts.BottomRight | CrosshairParts.Ring;
+        style.SavePreset("单侧三叉", style);
+        var serializer = new XmlSerializer(typeof(Settings));
+        using (var text = new StringWriter())
+        {
+            serializer.Serialize(text, style);
+            using (var input = new StringReader(text.ToString()))
+            {
+                var restored = (Settings)serializer.Deserialize(input); restored.Validate();
+                Assert(restored.Shape == 5 && restored.CustomParts == style.CustomParts && restored.DiagonalAngle == 30
+                    && restored.CustomPresets[0].Style.CustomParts == style.CustomParts && restored.CustomPresets[0].Style.DiagonalAngle == 30,
+                    "Custom part switches, angles and saved preset survive reload");
+            }
+        }
     }
 
     static async Task WaitFor(Func<bool> condition, string description, int timeout = 7000)
@@ -354,7 +412,7 @@ public static class RecognitionTests
     public static int Main(string[] args)
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-        try { UnitChecks(); DecimalPresetChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+        try { UnitChecks(); DecimalPresetChecks(); CustomPartChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
         if (!args.Contains("--interactive")) { Console.WriteLine("SUCCESS: " + checks + " assertions; interactive screen-capture test not requested."); return 0; }
         // The executable is named r5apex solely so the production foreground guard can be tested end to end.
         // All captured pixels belong to this synthetic window; no game process is modified or inspected.

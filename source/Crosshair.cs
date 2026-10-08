@@ -9,7 +9,7 @@ using System.Windows.Forms;
 using System.Xml.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("屏幕准星")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
 
 namespace ScreenCrosshair
 {
@@ -24,6 +24,15 @@ namespace ScreenCrosshair
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     }
 
+    public static class CrosshairParts
+    {
+        public const int Top = 1, Bottom = 2, Left = 4, Right = 8, Ring = 16;
+        public const int BottomLeft = 32, BottomRight = 64, TopLeft = 128, TopRight = 256;
+        public const int Cross = Top | Bottom | Left | Right;
+        public const int Diagonals = BottomLeft | BottomRight | TopLeft | TopRight;
+        public const int All = Cross | Ring | Diagonals;
+    }
+
     public class CrosshairStyle
     {
         public double Length = 8;
@@ -34,6 +43,19 @@ namespace ScreenCrosshair
         public bool Outline = true;
         public bool CenterDot = false;
         public string ColorHex = "";
+        public int CustomParts = CrosshairParts.Cross;
+        public double DiagonalAngle = 45;
+
+        public int PartsForShape(int shape)
+        {
+            if (shape == 5) return CustomParts;
+            if (shape == 6) return CrosshairParts.Top | CrosshairParts.BottomLeft | CrosshairParts.BottomRight;
+            if (shape == 7) return CrosshairParts.Diagonals;
+            if (shape == 4) return CrosshairParts.Top | CrosshairParts.Left | CrosshairParts.Right;
+            if (shape == 2 || shape == 3) return CrosshairParts.Ring;
+            return shape == 0 ? CrosshairParts.Cross : 0;
+        }
+        public double AngleForShape(int shape) { return shape == 6 ? 30 : shape == 5 ? DiagonalAngle : 45; }
 
         [XmlIgnore] public Color ForegroundColor
         {
@@ -42,19 +64,21 @@ namespace ScreenCrosshair
 
         public CrosshairStyle Copy(int shape)
         {
-            return new CrosshairStyle { Length = Length, Gap = Gap, Thickness = Thickness, Shape = shape, ColorIndex = ColorIndex, ColorHex = ColorHex, Outline = Outline, CenterDot = CenterDot };
+            return new CrosshairStyle { Length = Length, Gap = Gap, Thickness = Thickness, Shape = shape, ColorIndex = ColorIndex, ColorHex = ColorHex, Outline = Outline, CenterDot = CenterDot, CustomParts = CustomParts, DiagonalAngle = DiagonalAngle };
         }
 
         public void Apply(CrosshairStyle source)
         {
             Length = source.Length; Gap = source.Gap; Thickness = source.Thickness; Shape = source.Shape;
             ColorIndex = source.ColorIndex; ColorHex = source.ColorHex; Outline = source.Outline; CenterDot = source.CenterDot;
+            CustomParts = source.CustomParts; DiagonalAngle = source.DiagonalAngle;
         }
 
         public bool SameAppearance(CrosshairStyle other)
         {
             return other != null && Length == other.Length && Gap == other.Gap && Thickness == other.Thickness && Shape == other.Shape
-                && ColorIndex == other.ColorIndex && ColorHex == other.ColorHex && Outline == other.Outline && CenterDot == other.CenterDot;
+                && ColorIndex == other.ColorIndex && ColorHex == other.ColorHex && Outline == other.Outline && CenterDot == other.CenterDot
+                && CustomParts == other.CustomParts && DiagonalAngle == other.DiagonalAngle;
         }
 
         static double Dimension(double value, double min, double max, double fallback)
@@ -63,7 +87,8 @@ namespace ScreenCrosshair
         public void ValidateAppearance()
         {
             Length = Dimension(Length, 2, 32, 8); Gap = Dimension(Gap, 0, 20, 4); Thickness = Dimension(Thickness, 0.1, 8, 2);
-            Shape = Math.Max(0, Math.Min(4, Shape)); ColorIndex = Math.Max(0, Math.Min(Settings.Colors.Length - 1, ColorIndex));
+            Shape = Math.Max(0, Math.Min(7, Shape)); ColorIndex = Math.Max(0, Math.Min(Settings.Colors.Length - 1, ColorIndex));
+            CustomParts &= CrosshairParts.All; DiagonalAngle = Dimension(DiagonalAngle, 5, 85, 45);
             Color custom; ColorHex = Settings.TryParseColor(ColorHex, out custom) ? Settings.ToHex(custom) : "";
         }
     }
@@ -116,6 +141,7 @@ namespace ScreenCrosshair
             current.Length = defaults.Length; current.Gap = defaults.Gap; current.Thickness = defaults.Thickness;
             current.Shape = kind == WeaponKind.Shotgun ? 3 : kind == WeaponKind.Sniper ? 4 : 0;
             current.ColorIndex = 0; current.ColorHex = ""; current.Outline = true; current.CenterDot = false;
+            current.CustomParts = defaults.CustomParts; current.DiagonalAngle = defaults.DiagonalAngle;
         }
 
         public static bool TryParseColor(string text, out Color color)
@@ -192,13 +218,11 @@ namespace ScreenCrosshair
             float t = (float)s.Thickness, d = (float)s.Gap, n = (float)s.Length;
             // Keep old integer strokes aligned; fractional dimensions are resolved by alpha coverage in Rasterize.
             float half = t == (int)t ? (int)t / 2 : t / 2;
-            if (shape == 0 || shape == 4)
-            {
-                blocks.Add(new RectangleF(cx - half, cy - d - n, t, n));
-                if (shape != 4) blocks.Add(new RectangleF(cx - half, cy + d, t, n));
-                blocks.Add(new RectangleF(cx - d - n, cy - half, n, t));
-                blocks.Add(new RectangleF(cx + d, cy - half, n, t));
-            }
+            int parts = s.PartsForShape(shape);
+            if ((parts & CrosshairParts.Top) != 0) blocks.Add(new RectangleF(cx - half, cy - d - n, t, n));
+            if ((parts & CrosshairParts.Bottom) != 0) blocks.Add(new RectangleF(cx - half, cy + d, t, n));
+            if ((parts & CrosshairParts.Left) != 0) blocks.Add(new RectangleF(cx - d - n, cy - half, n, t));
+            if ((parts & CrosshairParts.Right) != 0) blocks.Add(new RectangleF(cx + d, cy - half, n, t));
             if (shape == 1 || shape == 3 || s.CenterDot)
             {
                 float size = shape == 1 ? Math.Max(2, t + 2) : t;
@@ -210,9 +234,18 @@ namespace ScreenCrosshair
                 if (s.Outline)
                     foreach (RectangleF r in blocks) { RectangleF edge = r; edge.Inflate(1, 1); g.FillRectangle(Brushes.Black, edge); }
                 foreach (RectangleF r in blocks) g.FillRectangle(color, r);
-                if (shape == 2 || shape == 3)
+                if ((parts & CrosshairParts.Diagonals) != 0)
                 {
-                    float radius = n;
+                    double radians = s.AngleForShape(shape) * Math.PI / 180;
+                    float dx = (float)Math.Cos(radians), dy = (float)Math.Sin(radians);
+                    if ((parts & CrosshairParts.BottomLeft) != 0) Ray(g, color, s.Outline, cx, cy, -dx, dy, d, n, t);
+                    if ((parts & CrosshairParts.BottomRight) != 0) Ray(g, color, s.Outline, cx, cy, dx, dy, d, n, t);
+                    if ((parts & CrosshairParts.TopLeft) != 0) Ray(g, color, s.Outline, cx, cy, -dx, -dy, d, n, t);
+                    if ((parts & CrosshairParts.TopRight) != 0) Ray(g, color, s.Outline, cx, cy, dx, -dy, d, n, t);
+                }
+                if ((parts & CrosshairParts.Ring) != 0)
+                {
+                    float radius = n + ((parts & (CrosshairParts.Cross | CrosshairParts.Diagonals)) != 0 ? d : 0);
                     var circle = new RectangleF(cx - radius, cy - radius, radius * 2, radius * 2);
                     if (s.Outline) using (var edge = new Pen(Color.Black, t + 2)) g.DrawEllipse(edge, circle);
                     using (var pen = new Pen(color, t)) g.DrawEllipse(pen, circle);
@@ -220,10 +253,19 @@ namespace ScreenCrosshair
             }
         }
 
+        static void Ray(Graphics g, Brush color, bool outline, float cx, float cy, float dx, float dy, float gap, float length, float thickness)
+        {
+            float px = -dy * thickness / 2, py = dx * thickness / 2;
+            var points = new[] { new PointF(cx + dx * gap + px, cy + dy * gap + py), new PointF(cx + dx * (gap + length) + px, cy + dy * (gap + length) + py),
+                new PointF(cx + dx * (gap + length) - px, cy + dy * (gap + length) - py), new PointF(cx + dx * gap - px, cy + dy * gap - py) };
+            if (outline) using (var pen = new Pen(Color.Black, 2)) { pen.LineJoin = LineJoin.Miter; g.DrawPolygon(pen, points); }
+            g.FillPolygon(color, points);
+        }
+
         public static Bitmap Rasterize(CrosshairStyle style, int width, int height)
         {
             var result = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-            bool fractional = style.Length % 1 != 0 || style.Gap % 1 != 0 || style.Thickness % 1 != 0;
+            bool fractional = style.Length % 1 != 0 || style.Gap % 1 != 0 || style.Thickness % 1 != 0 || (style.PartsForShape(style.Shape) & CrosshairParts.Diagonals) != 0;
             using (Graphics target = Graphics.FromImage(result))
             {
                 if (!fractional) Draw(target, style, width / 2, height / 2);
