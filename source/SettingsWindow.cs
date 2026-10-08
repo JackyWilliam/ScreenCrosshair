@@ -17,9 +17,11 @@ namespace ScreenCrosshair
             CrosshairParts.TopLeft, CrosshairParts.TopRight, CrosshairParts.BottomLeft, CrosshairParts.BottomRight };
         readonly TextBox hex = Theme.Input(new Rectangle(481, 84, 104, 28));
         readonly Button pickColor, chooseRegion, deletePreset, applyPreset;
-        readonly Label recognitionStatus = new Label(), regionStatus = new Label(), previewTitle = new Label();
+        readonly Label recognitionStatus = new Label(), regionStatus = new Label(), previewTitle = new Label(), presetTitle = new Label(), footer = new Label();
+        readonly string shortcuts;
+        readonly CustomPreset[] selectedPresets = new CustomPreset[3];
         readonly System.Windows.Forms.Timer statusTimer;
-        bool loading, choosing;
+        bool loading, choosing, loadingPresets;
         Screen[] screens;
         WeaponKind EditingKind { get { return (WeaponKind)Math.Max(0, profile.SelectedIndex); } }
         CrosshairStyle EditingStyle { get { return overlay.Config.Profile(EditingKind); } }
@@ -33,13 +35,13 @@ namespace ScreenCrosshair
             canvas.Controls.Add(Theme.Label("三套独立配置  /  即时生效  /  自动保存", new Rectangle(28, 58, 600, 26), true));
             canvas.Controls.Add(Theme.Label("正在调整", new Rectangle(28, 103, 78, 28), true));
             profile.Name = "EditingProfile"; Theme.Combo(profile, new Rectangle(108, 100, 208, 32), canvas);
-            profile.Items.AddRange(new object[] { "普通 / 手动", "霰弹枪", "狙击枪" }); profile.SelectedIndex = 0;
-            canvas.Controls.Add(Theme.Label("自定义预设", new Rectangle(342, 103, 91, 28), true));
+            profile.Items.AddRange(new object[] { Settings.ProfileName(WeaponKind.Ordinary), "霰弹枪", "狙击枪" }); profile.SelectedIndex = 0;
+            presetTitle.SetBounds(342, 103, 91, 28); presetTitle.ForeColor = Theme.Muted; presetTitle.TextAlign = ContentAlignment.MiddleLeft; canvas.Controls.Add(presetTitle);
             presets.Name = "CustomPresets"; Theme.Combo(presets, new Rectangle(438, 100, 196, 32), canvas);
             applyPreset = Theme.Button("套用", new Rectangle(644, 100, 60, 32)); canvas.Controls.Add(applyPreset);
             var save = Theme.Button("保存…", new Rectangle(714, 100, 76, 32)); save.Name = "SavePreset"; canvas.Controls.Add(save);
             deletePreset = Theme.Button("删除", new Rectangle(800, 100, 60, 32)); canvas.Controls.Add(deletePreset);
-            presets.SelectedIndexChanged += delegate { applyPreset.Enabled = deletePreset.Enabled = presets.SelectedItem is CustomPreset; };
+            presets.SelectedIndexChanged += delegate { if (!loadingPresets) UpdatePresetSelection(); };
             applyPreset.Click += delegate { ApplySelectedPreset(); };
             save.Click += delegate { SavePresetDialog(); };
             deletePreset.Click += delegate { DeletePresetDialog(); };
@@ -85,12 +87,21 @@ namespace ScreenCrosshair
             regionStatus.SetBounds(18, 122, 796, 24); regionStatus.ForeColor = Theme.Muted; regionStatus.Font = new Font(Font.FontFamily, 8.5F); autoPanel.Controls.Add(regionStatus);
 
             canvas.Controls.Add(Theme.Label("显示器", new Rectangle(28, 781, 66, 28), true));
-            Theme.Combo(monitor, new Rectangle(100, 778, 446, 32), canvas);
+            Theme.Combo(monitor, new Rectangle(100, 778, 320, 32), canvas);
+            var sync = Theme.Button("同步通用参数", new Rectangle(434, 777, 160, 34)); sync.Name = "SyncCommonParameters";
+            sync.AccessibleDescription = "将当前类别的尺寸、颜色和描边同步到另外两类，保留各类形状和部件开关。";
+            sync.Click += delegate
+            {
+                overlay.Config.SyncCommonParameters(EditingKind); overlay.Changed(false); Reload();
+                footer.Text = "已将" + Settings.ProfileName(EditingKind) + "的尺寸、颜色、描边同步到另外两类；形状、部件开关和已存预设保留。";
+                footer.ForeColor = Theme.Accent;
+            };
+            canvas.Controls.Add(sync);
             var reset = Theme.Button("重置当前", new Rectangle(606, 777, 120, 34)); reset.Click += delegate { overlay.Config.ResetProfile(EditingKind); Reload(); overlay.Changed(false); }; canvas.Controls.Add(reset);
             var done = Theme.Button("完成", new Rectangle(738, 777, 122, 34), true); done.Click += delegate { Close(); }; canvas.Controls.Add(done);
-            string shortcuts = owner.HotkeyErrors.Count == 0 ? "Ctrl + Alt  ·  F8 显示 / 隐藏    F9 设置    F10 换屏    F11 退出"
+            shortcuts = owner.HotkeyErrors.Count == 0 ? "Ctrl + Alt  ·  F8 显示 / 隐藏    F9 设置    F10 换屏    F11 退出"
                 : "快捷键被占用：" + string.Join("、", owner.HotkeyErrors.ToArray()) + "；请使用托盘菜单。";
-            canvas.Controls.Add(Theme.Label(shortcuts, new Rectangle(28, 814, 825, 23), true));
+            footer.SetBounds(28, 814, 825, 23); footer.TextAlign = ContentAlignment.MiddleLeft; canvas.Controls.Add(footer);
             // The editor selection is independent of whichever profile recognition is displaying in the game.
             profile.SelectedIndexChanged += delegate { if (!loading) Reload(); };
             shape.SelectedIndexChanged += delegate(object sender, EventArgs args)
@@ -134,7 +145,7 @@ namespace ScreenCrosshair
             chooseRegion.Click += ChooseRegion;
             statusTimer = new System.Windows.Forms.Timer { Interval = 350 };
             statusTimer.Tick += delegate { recognitionStatus.Text = overlay.Recognition.Status; };
-            statusTimer.Start(); Reload(); ReloadPresets(null);
+            statusTimer.Start(); Reload();
         }
         static Panel Card(Control parent, Rectangle bounds)
         {
@@ -151,35 +162,46 @@ namespace ScreenCrosshair
         }
         void ReloadPresets(CustomPreset selected)
         {
+            loadingPresets = true;
+            var current = overlay.Config.Presets(EditingKind);
             presets.Items.Clear(); presets.Items.Add("选择已保存的预设");
-            foreach (CustomPreset preset in overlay.Config.CustomPresets) presets.Items.Add(preset);
-            presets.SelectedItem = selected == null ? presets.Items[0] : selected;
+            foreach (CustomPreset preset in current) presets.Items.Add(preset);
+            presets.SelectedItem = selected == null || !current.Contains(selected) ? presets.Items[0] : selected;
+            presetTitle.Text = EditingKind == WeaponKind.Ordinary ? "普通预设" : Settings.ProfileName(EditingKind) + "预设";
+            presets.AccessibleName = Settings.ProfileName(EditingKind) + "的预设";
+            loadingPresets = false; UpdatePresetSelection();
+        }
+        void UpdatePresetSelection()
+        {
+            selectedPresets[(int)EditingKind] = presets.SelectedItem as CustomPreset;
+            applyPreset.Enabled = deletePreset.Enabled = selectedPresets[(int)EditingKind] != null;
         }
         public void ApplySelectedPreset()
         {
-            var preset = presets.SelectedItem as CustomPreset; if (preset == null) return;
+            var preset = presets.SelectedItem as CustomPreset;
+            if (preset == null || !overlay.Config.Presets(EditingKind).Contains(preset)) return;
             EditingStyle.Apply(preset.Style); Reload(); AppearanceChanged();
         }
         void SavePresetDialog()
         {
-            using (var dialog = new PresetDialog(overlay.Config, presets.SelectedItem as CustomPreset) { Icon = Icon })
+            using (var dialog = new PresetDialog(overlay.Config, presets.SelectedItem as CustomPreset, EditingKind) { Icon = Icon })
                 if (dialog.ShowDialog(this) == DialogResult.OK)
                 {
-                    CustomPreset saved = overlay.Config.SavePreset(dialog.PresetName, EditingStyle);
+                    CustomPreset saved = overlay.Config.SavePreset(dialog.PresetName, EditingStyle, EditingKind);
                     ReloadPresets(saved); overlay.Changed(false);
                 }
         }
         void DeletePresetDialog()
         {
             var preset = presets.SelectedItem as CustomPreset; if (preset == null) return;
-            using (var dialog = new ChromeForm { Text = "删除自定义预设", ClientSize = new Size(440, 212), StartPosition = FormStartPosition.CenterParent, Icon = Icon })
+            using (var dialog = new ChromeForm { Text = "删除" + Settings.ProfileName(EditingKind) + "预设", ClientSize = new Size(440, 212), StartPosition = FormStartPosition.CenterParent, Icon = Icon })
             {
                 dialog.Body.Controls.Add(Theme.Label("删除“" + preset.Name + "”？", new Rectangle(22, 15, 393, 52)));
-                dialog.Body.Controls.Add(Theme.Label("已套用的准星外观会保留。", new Rectangle(22, 67, 393, 25), true));
+                dialog.Body.Controls.Add(Theme.Label("仅删除当前类别的预设，已套用外观保留。", new Rectangle(22, 67, 393, 25), true));
                 var cancel = Theme.Button("取消", new Rectangle(216, 111, 92, 32)); cancel.DialogResult = DialogResult.Cancel;
                 var remove = Theme.Button("删除", new Rectangle(320, 111, 96, 32)); remove.ForeColor = Theme.Error; remove.DialogResult = DialogResult.OK;
                 dialog.Body.Controls.Add(cancel); dialog.Body.Controls.Add(remove); dialog.CancelButton = cancel;
-                if (dialog.ShowDialog(this) == DialogResult.OK) { overlay.Config.CustomPresets.Remove(preset); ReloadPresets(null); overlay.Changed(false); }
+                if (dialog.ShowDialog(this) == DialogResult.OK) { overlay.Config.Presets(EditingKind).Remove(preset); ReloadPresets(null); overlay.Changed(false); }
             }
         }
         public void Reload()
@@ -195,6 +217,8 @@ namespace ScreenCrosshair
             monitor.SelectedIndex = Array.FindIndex(screens, delegate(Screen screen) { return screen.DeviceName == overlay.SelectedScreen().DeviceName; });
             regionStatus.Text = s.CaptureRegionSet ? "已框选双枪名区域  ·  仅 Apex 前台识别  ·  图片不保存、不上传" : "请框选两个完整枪名，亮的和暗的都要包含。关闭自动识别时使用普通配置。";
             recognitionStatus.Text = overlay.Recognition.Status;
+            footer.Text = shortcuts; footer.ForeColor = Theme.Muted;
+            ReloadPresets(selectedPresets[(int)EditingKind]);
             loading = false; EnableFields(); preview.Invalidate();
         }
         void EnableFields()
@@ -272,19 +296,19 @@ namespace ScreenCrosshair
     {
         readonly TextBox name;
         public string PresetName { get { return name.Text.Trim(); } }
-        public PresetDialog(Settings settings, CustomPreset selected)
+        public PresetDialog(Settings settings, CustomPreset selected, WeaponKind kind = WeaponKind.Ordinary)
         {
-            Text = "保存自定义预设"; ClientSize = new Size(440, 250); StartPosition = FormStartPosition.CenterParent;
+            Text = "保存" + Settings.ProfileName(kind) + "预设"; ClientSize = new Size(440, 250); StartPosition = FormStartPosition.CenterParent;
             Body.Controls.Add(Theme.Label("给当前外观起个名字", new Rectangle(22, 12, 390, 26)));
             name = Theme.Input(new Rectangle(22, 49, 392, 30)); name.Name = "PresetName"; name.MaxLength = 40; name.Text = selected == null ? "" : selected.Name; Body.Controls.Add(name);
-            var hint = Theme.Label("保存后可套用到普通、霰弹枪或狙击枪。", new Rectangle(22, 85, 392, 45), true); Body.Controls.Add(hint);
+            var hint = Theme.Label("保存到“" + Settings.ProfileName(kind) + "”的独立预设列表。", new Rectangle(22, 85, 392, 45), true); Body.Controls.Add(hint);
             var cancel = Theme.Button("取消", new Rectangle(216, 147, 92, 32)); cancel.DialogResult = DialogResult.Cancel; Body.Controls.Add(cancel);
             var save = Theme.Button("保存", new Rectangle(320, 147, 94, 32), true); Body.Controls.Add(save);
             EventHandler validate = delegate
             {
-                bool exists = settings.CustomPresets.Exists(p => string.Equals(p.Name, PresetName, StringComparison.OrdinalIgnoreCase));
+                bool exists = settings.Presets(kind).Exists(p => string.Equals(p.Name, PresetName, StringComparison.OrdinalIgnoreCase));
                 save.Text = exists ? "更新" : "保存"; save.Enabled = PresetName.Length > 0 && !Array.Exists(PresetName.ToCharArray(), char.IsControl);
-                hint.Text = exists ? "同名预设已存在，点击“更新”替换它的外观。" : "保存后可套用到普通、霰弹枪或狙击枪。";
+                hint.Text = exists ? "当前类别已有同名预设，点击“更新”替换。" : "保存到“" + Settings.ProfileName(kind) + "”的独立预设列表。";
             };
             name.TextChanged += validate; validate(null, EventArgs.Empty);
             save.Click += delegate { DialogResult = DialogResult.OK; Close(); };

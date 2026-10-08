@@ -25,7 +25,7 @@ public static class RecognitionTests
         Assert(Find("CHARGE RIFLE") != null && Find("CHARGE RIFLE").Kind == WeaponKind.Sniper, "English spacing");
         Assert(Find("SENTINEL PEACEKEEPER") == null, "Flat text cannot resolve two weapon names");
         Assert(Find("轻型弹药 120") == null && Find("SNIPER AMMO") == null && Find("") == null, "Unknown text and ammo do not select a gun");
-        Assert(Find("TRIPLE TAKE").Kind == WeaponKind.Ordinary, "Marksman category remains ordinary");
+        Assert(new[] { "G7", "G7 SCOUT", "G7侦察枪", "30-30 REPEATER", "3030", "BOCEK", "波塞克", "三重击", "TRIPLE TAKE" }.All(name => Find(name) != null && Find(name).Kind == WeaponKind.Sniper), "Marksman aliases all use the sniper profile");
         Assert(Find("R-301 CARBINE").Name == "R-301" && Find("CARBINE") == null, "CAR alias cannot match the word CARBINE");
         var tracker = new StableWeaponTracker();
         Assert(tracker.Observe(Find("SENTINEL")) == null, "One frame cannot switch style");
@@ -171,6 +171,11 @@ public static class RecognitionTests
             Assert(overlay.Recognition.DisplayShape == 2 && ReferenceEquals(overlay.Recognition.DisplayStyle, legacy.Shotgun), "Appearance edits preserve recognition and use chosen profile shape");
             tracker.Observe(Find("SENTINEL")); tracker.Observe(Find("SENTINEL"));
             Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy.Sniper), "Confirmed sniper selects complete sniper profile");
+            foreach (string name in new[] { "G7 SCOUT", "30-30", "BOCEK", "TRIPLE TAKE" })
+            {
+                tracker.Reset(); tracker.Observe(Find(name)); tracker.Observe(Find(name));
+                Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy.Sniper), "Confirmed marksman selects complete sniper profile: " + name);
+            }
             tracker.Observe(null); tracker.Observe(null); tracker.Observe(null);
             Assert(ReferenceEquals(overlay.Recognition.DisplayStyle, legacy), "Unknown readings restore complete ordinary profile");
             tracker.Observe(Find("MASTIFF")); tracker.Observe(Find("MASTIFF")); overlay.Changed();
@@ -229,7 +234,7 @@ public static class RecognitionTests
             profile.SelectedIndex = 1;
             Descendants(settings).OfType<Button>().Single(b => b.Text == "重置当前").PerformClick();
             Assert(config.Shotgun.Length == 8 && config.Shotgun.Shape == 3 && config.Length == 19 && config.Sniper.Gap == 11, "UI reset is limited to selected profile");
-            CustomPreset savedPreset = config.SavePreset("我的细准星", new CrosshairStyle { Length = 12.75, Gap = 3.25, Thickness = 1.25, ColorHex = "#77DDCC" });
+            CustomPreset savedPreset = config.SavePreset("我的细准星", new CrosshairStyle { Length = 12.75, Gap = 3.25, Thickness = 1.25, ColorHex = "#77DDCC" }, WeaponKind.Shotgun);
             ComboBox custom = Descendants(settings).OfType<ComboBox>().Single(c => c.Name == "CustomPresets");
             custom.Items.Add(savedPreset); custom.SelectedItem = savedPreset; settings.ApplySelectedPreset();
             Assert(config.Shotgun.Thickness == 1.25 && config.Shotgun.Length == 12.75 && config.Length == 19, "Applying named preset affects only editor profile");
@@ -245,10 +250,10 @@ public static class RecognitionTests
             CheckBox ring = Descendants(settings).OfType<CheckBox>().Single(c => c.Name == "Part16");
             top.Checked = false; ring.Checked = true;
             Assert(config.Shotgun.CustomParts == (CrosshairParts.BottomLeft | CrosshairParts.BottomRight | CrosshairParts.Ring) && config.Shape == 0, "Independent UI switches remove one spoke and add ring only to selected profile");
-            CustomPreset customParts = config.SavePreset("自定义部件", config.Shotgun);
+            CustomPreset customParts = config.SavePreset("自定义部件", config.Shotgun, WeaponKind.Shotgun);
             top.Checked = true;
             Assert((customParts.Style.CustomParts & CrosshairParts.Top) == 0, "Saved custom parts remain isolated from live switches");
-            using (var dialog = new PresetDialog(config, savedPreset))
+            using (var dialog = new PresetDialog(config, savedPreset, WeaponKind.Shotgun))
             {
                 Assert(Descendants(dialog).OfType<Button>().Any(b => b.Text == "更新"), "Existing preset clearly offers update");
                 Descendants(dialog).OfType<TextBox>().Single().Text = "";
@@ -256,6 +261,128 @@ public static class RecognitionTests
             }
             config.AutoDetect = false; overlay.Changed(); Assert(overlay.Recognition.Status == "自动识别已关闭", "Disabled recognition reports stopped");
             settings.Close(); overlay.Close();
+        }
+    }
+
+    static Settings RoundTrip(Settings settings)
+    {
+        var serializer = new XmlSerializer(typeof(Settings));
+        using (var text = new StringWriter())
+        {
+            serializer.Serialize(text, settings);
+            using (var input = new StringReader(text.ToString())) { var saved = (Settings)serializer.Deserialize(input); saved.Validate(); return saved; }
+        }
+    }
+
+    static void ScopedPresetChecks()
+    {
+        var config = new Settings();
+        config.SavePreset("竞技", new CrosshairStyle { Length = 10.5 }, WeaponKind.Ordinary);
+        Assert(config.Presets(WeaponKind.Shotgun).Count == 0 && config.Presets(WeaponKind.Sniper).Count == 0, "Fresh ordinary preset does not populate other categories");
+        config.SavePreset("竞技", new CrosshairStyle { Shape = 3, Length = 20.5 }, WeaponKind.Shotgun);
+        config.SavePreset("竞技", new CrosshairStyle { Shape = 4, Length = 30.5 }, WeaponKind.Sniper);
+        Assert(config.Presets(WeaponKind.Ordinary)[0].Style.Length == 10.5 && config.Presets(WeaponKind.Shotgun)[0].Style.Length == 20.5 && config.Presets(WeaponKind.Sniper)[0].Style.Length == 30.5,
+            "Same preset name stores independent styles in all three categories");
+        config.SavePreset("竞技", new CrosshairStyle { Length = 24 }, WeaponKind.Shotgun);
+        Assert(config.Presets(WeaponKind.Ordinary)[0].Style.Length == 10.5 && config.Presets(WeaponKind.Shotgun)[0].Style.Length == 24 && config.Presets(WeaponKind.Sniper)[0].Style.Length == 30.5,
+            "Updating same-name shotgun preset leaves ordinary and sniper intact");
+        config.Presets(WeaponKind.Shotgun).Clear();
+        Settings restored = RoundTrip(config);
+        Assert(restored.Presets(WeaponKind.Shotgun).Count == 0 && restored.Presets(WeaponKind.Ordinary).Count == 1 && restored.Presets(WeaponKind.Sniper).Count == 1,
+            "Deleting last preset in one category stays isolated and empty after restart");
+
+        const string legacyXml = "<Settings><Length>14</Length><AutoDetect>true</AutoDetect><CaptureLayoutVersion>2</CaptureLayoutVersion><CaptureRegionSet>true</CaptureRegionSet><CaptureX>0.7</CaptureX><CaptureY>0.8</CaptureY><CaptureWidth>0.2</CaptureWidth><CaptureHeight>0.1</CaptureHeight><CustomPresets><CustomPreset><Name>旧组合</Name><Style><Shape>5</Shape><Length>12.75</Length><CustomParts>113</CustomParts><DiagonalAngle>30</DiagonalAngle></Style></CustomPreset></CustomPresets></Settings>";
+        Settings legacy;
+        using (var text = new StringReader(legacyXml)) legacy = (Settings)new XmlSerializer(typeof(Settings)).Deserialize(text);
+        legacy.Validate();
+        Assert(legacy.PresetLayoutVersion == 1 && legacy.Presets(WeaponKind.Ordinary).Count == 1 && legacy.Presets(WeaponKind.Shotgun).Count == 1 && legacy.Presets(WeaponKind.Sniper).Count == 1,
+            "Legacy shared presets migrate once to three accessible lists");
+        Assert(!ReferenceEquals(legacy.CustomPresets[0], legacy.ShotgunPresets[0]) && !ReferenceEquals(legacy.CustomPresets[0].Style, legacy.SniperPresets[0].Style),
+            "Migrated preset records and styles are deep copies");
+        legacy.ShotgunPresets[0].Style.CustomParts = 0;
+        Assert(legacy.CustomPresets[0].Style.CustomParts == 113 && legacy.SniperPresets[0].Style.DiagonalAngle == 30 && legacy.Length == 14 && legacy.AutoDetect && legacy.CaptureRegionSet,
+            "Migration isolates custom components and preserves active appearance and ROI");
+        legacy.SniperPresets.Clear(); restored = RoundTrip(legacy);
+        Assert(restored.SniperPresets.Count == 0 && restored.CustomPresets[0].Style.Length == 12.75 && restored.ShotgunPresets[0].Style.CustomParts == 0,
+            "Legacy migration does not repopulate a deleted list on later restarts");
+    }
+
+    static void ScopedPresetUiChecks()
+    {
+        var config = new Settings();
+        CustomPreset ordinary = config.SavePreset("日常", new CrosshairStyle { Length = 12 }, WeaponKind.Ordinary);
+        CustomPreset shotgun = config.SavePreset("日常", new CrosshairStyle { Shape = 3, Length = 24 }, WeaponKind.Shotgun);
+        CustomPreset sniper = config.SavePreset("狙击专用", new CrosshairStyle { Shape = 4, Gap = 10 }, WeaponKind.Sniper);
+        using (var overlay = new Overlay(config, false))
+        using (var window = new TestSettingsWindow(overlay))
+        {
+            window.Show(); Application.DoEvents();
+            ComboBox profile = Descendants(window).OfType<ComboBox>().Single(c => c.Name == "EditingProfile");
+            ComboBox presets = Descendants(window).OfType<ComboBox>().Single(c => c.Name == "CustomPresets");
+            Assert(presets.Items.Count == 2 && ReferenceEquals(presets.Items[1], ordinary), "Ordinary UI lists only ordinary presets");
+            presets.SelectedIndex = 1;
+            profile.SelectedIndex = 1;
+            Assert(presets.Items.Count == 2 && ReferenceEquals(presets.Items[1], shotgun) && presets.SelectedIndex == 0, "Switching to shotgun replaces list without leaking selection");
+            presets.SelectedIndex = 1; window.ApplySelectedPreset();
+            Assert(config.Shotgun.Length == 24 && config.Length == 8 && config.Sniper.Gap == 4, "Shotgun preset applies only to shotgun profile");
+            profile.SelectedIndex = 2;
+            Assert(presets.Items.Count == 2 && ReferenceEquals(presets.Items[1], sniper), "Sniper UI lists only sniper presets");
+            presets.SelectedIndex = 1; window.ApplySelectedPreset();
+            profile.SelectedIndex = 0;
+            Assert(ReferenceEquals(presets.SelectedItem, ordinary) && config.Sniper.Gap == 10, "Each category remembers its own selection and applied values");
+            using (var dialog = new PresetDialog(config, null, WeaponKind.Sniper))
+            {
+                TextBox name = Descendants(dialog).OfType<TextBox>().Single(); name.Text = "日常";
+                Assert(Descendants(dialog).OfType<Button>().Any(b => b.Text == "保存" && b.Enabled), "Names in another category do not trigger overwrite prompt");
+                name.Text = "狙击专用";
+                Assert(Descendants(dialog).OfType<Button>().Any(b => b.Text == "更新"), "Overwrite prompt checks only the current category");
+            }
+            window.Close();
+        }
+    }
+
+    static void CommonParameterChecks()
+    {
+        foreach (WeaponKind sourceKind in new[] { WeaponKind.Ordinary, WeaponKind.Shotgun, WeaponKind.Sniper })
+        {
+            var config = new Settings { AutoDetect = true, OcrLanguage = "en-US", ScanInterval = 2000,
+                CaptureRegionSet = true, CaptureLayoutVersion = 2, CaptureX = .7, CaptureY = .8, CaptureWidth = .2, CaptureHeight = .1, Monitor = "test-monitor" };
+            var kinds = new[] { WeaponKind.Ordinary, WeaponKind.Shotgun, WeaponKind.Sniper };
+            foreach (WeaponKind kind in kinds)
+            {
+                CrosshairStyle current = config.Profile(kind);
+                current.Shape = kind == WeaponKind.Ordinary ? 6 : kind == WeaponKind.Shotgun ? 5 : 4;
+                current.CenterDot = kind == WeaponKind.Shotgun; current.CustomParts = 1 << (int)kind; current.DiagonalAngle = 30 + (int)kind * 15;
+                config.SavePreset("保持原样", current, kind);
+            }
+            CrosshairStyle source = config.Profile(sourceKind);
+            source.Length = 25.75; source.Gap = 7.25; source.Thickness = 1.35; source.Outline = false;
+            source.ColorIndex = 4; source.ColorHex = sourceKind == WeaponKind.Ordinary ? "" : "#12ABCD";
+            CrosshairStyle[] before = kinds.Select(k => config.Profile(k).Copy(config.Profile(k).Shape)).ToArray();
+            config.SyncCommonParameters(sourceKind);
+            Assert(kinds.All(k => config.Profile(k).Length == 25.75 && config.Profile(k).Gap == 7.25 && config.Profile(k).Thickness == 1.35
+                && !config.Profile(k).Outline && config.Profile(k).ColorIndex == 4 && config.Profile(k).ColorHex == source.ColorHex), "Common appearance copies from " + sourceKind);
+            Assert(kinds.All(k => config.Profile(k).Shape == before[(int)k].Shape && config.Profile(k).CustomParts == before[(int)k].CustomParts
+                && config.Profile(k).CenterDot == before[(int)k].CenterDot && config.Profile(k).DiagonalAngle == before[(int)k].DiagonalAngle), "Sync preserves each category geometry from " + sourceKind);
+            Assert(kinds.All(k => config.Presets(k)[0].Style.Length == 8) && source.SameAppearance(before[(int)sourceKind]), "Sync preserves saved presets and source from " + sourceKind);
+            Settings restored = RoundTrip(config);
+            Assert(kinds.All(k => restored.Profile(k).SameAppearance(config.Profile(k))) && restored.AutoDetect && restored.OcrLanguage == "en-US" && restored.ScanInterval == 2000
+                && restored.CaptureRegionSet && restored.CaptureX == .7 && restored.CaptureY == .8 && restored.CaptureWidth == .2 && restored.CaptureHeight == .1 && restored.Monitor == "test-monitor",
+                "Sync persists appearance without changing recognition or monitor from " + sourceKind);
+        }
+        var uiConfig = new Settings(); uiConfig.Profile(WeaponKind.Sniper).Length = 19.25;
+        using (var overlay = new Overlay(uiConfig, false))
+        using (var window = new TestSettingsWindow(overlay))
+        {
+            window.Show(); Application.DoEvents();
+            Descendants(window).OfType<ComboBox>().Single(c => c.Name == "EditingProfile").SelectedIndex = 2;
+            Descendants(window).OfType<Button>().Single(b => b.Name == "SyncCommonParameters").PerformClick();
+            Assert(uiConfig.Length == 19.25 && uiConfig.Shotgun.Length == 19.25 && uiConfig.Shotgun.Shape == 3 && uiConfig.Sniper.Shape == 4,
+                "Sync button uses editing category instead of active ordinary overlay");
+            Assert(Descendants(window).OfType<Label>().Any(l => l.Text.StartsWith("已将狙击枪")), "Sync button confirms source category");
+            uiConfig.Sniper.Length = 20;
+            Assert(uiConfig.Length == 19.25 && uiConfig.Shotgun.Length == 19.25, "Sync is a one-time copy and later changes remain independent");
+            window.Close();
         }
     }
 
@@ -412,7 +539,7 @@ public static class RecognitionTests
     public static int Main(string[] args)
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-        try { UnitChecks(); DecimalPresetChecks(); CustomPartChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+        try { UnitChecks(); ScopedPresetChecks(); ScopedPresetUiChecks(); CommonParameterChecks(); DecimalPresetChecks(); CustomPartChecks(); ImagePipeline(); HighlightChecks(); ProfileChecks(); UiChecks(); } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
         if (!args.Contains("--interactive")) { Console.WriteLine("SUCCESS: " + checks + " assertions; interactive screen-capture test not requested."); return 0; }
         // The executable is named r5apex solely so the production foreground guard can be tested end to end.
         // All captured pixels belong to this synthetic window; no game process is modified or inspected.

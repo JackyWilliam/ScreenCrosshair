@@ -23,7 +23,7 @@ namespace ScreenCrosshair
     public static class WeaponCatalog
     {
         // Explicit names avoid mistaking generic "sniper ammo" for a gun; activation is resolved from label brightness.
-        // Categories follow EA's weapon guide; marksman weapons deliberately keep the ordinary style.
+        // These are overlay profiles, not game weapon classes: the user groups marksman weapons with snipers.
         public static readonly Weapon[] All = {
             new Weapon("和平捍卫者", WeaponKind.Shotgun, "PEACEKEEPER", "和平捍卫者", "和平捍衛者", "和平使者"),
             new Weapon("敖犬", WeaponKind.Shotgun, "MASTIFF", "敖犬", "獒犬"),
@@ -44,9 +44,9 @@ namespace ScreenCrosshair
             new Weapon("专注", WeaponKind.Ordinary, "DEVOTION", "专注", "專注"), new Weapon("L-STAR", WeaponKind.Ordinary, "LSTAR"),
             new Weapon("喷火", WeaponKind.Ordinary, "SPITFIRE", "喷火", "噴火", "M600"),
             new Weapon("暴走", WeaponKind.Ordinary, "RAMPAGE", "暴走", "狂暴"),
-            new Weapon("G7", WeaponKind.Ordinary, "G7SCOUT", "G7侦察", "G7偵察"),
-            new Weapon("三重式", WeaponKind.Ordinary, "TRIPLETAKE", "三重式", "三重擊"),
-            new Weapon("30-30", WeaponKind.Ordinary, "3030"), new Weapon("波塞克", WeaponKind.Ordinary, "BOCEK", "波塞克", "博切克"),
+            new Weapon("G7", WeaponKind.Sniper, "G7SCOUT", "G7侦察", "G7偵察", "G7"),
+            new Weapon("三重式", WeaponKind.Sniper, "TRIPLETAKE", "三重式", "三重击", "三重擊"),
+            new Weapon("30-30", WeaponKind.Sniper, "3030"), new Weapon("波塞克", WeaponKind.Sniper, "BOCEK", "波塞克", "博切克"),
             new Weapon("RE-45", WeaponKind.Ordinary, "RE45"), new Weapon("P2020", WeaponKind.Ordinary, "P2020"),
             new Weapon("辅助手枪", WeaponKind.Ordinary, "WINGMAN", "辅助手枪", "輔助手槍")
         };
